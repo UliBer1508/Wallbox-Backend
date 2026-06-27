@@ -1,0 +1,2 @@
+cd C:\Users\ulibe\Wallbox-Backend
+powershell -ExecutionPolicy Bypass -File .\test-ladevorgang.ps1

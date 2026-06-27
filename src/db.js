@@ -1,0 +1,446 @@
+// src/db.js
+//
+// DATENSCHICHT — SQLite (better-sqlite3)
+// =====================================
+// Persistenz für die neue 3-Layer-Architektur. KEINE Geschäftslogik,
+// KEINE Hardware, KEIN Stripe — nur Lesen/Schreiben/Schema.
+// server.js und stripe.js rufen diese Funktionen auf; sie selbst kennt
+// weder Fassade noch Manager.
+//
+// Tabellen:
+//   users     — Admin-Logins (mehrere möglich, Passwort gehasht)
+//   sessions  — Ladevorgänge (Lade-Verlauf, Live-Session)
+//   settings  — alle Parameter A–D (überschreiben config.js-Defaults)
+//   invoices  — Rechnungen (voll; pdf_path für späteren PDF-Beleg)
+//   logs      — Betriebsprotokoll (90 Tage)
+//   errors    — Fehlerhistorie aus errorOccurred-Events (90 Tage)
+//
+// ES-Modul. Benötigt: better-sqlite3 (steht in package.json).
+// Passwort-Hashing: Node-eingebautes crypto.scrypt (keine Extra-Dependency).
+
+// better-sqlite3 wird auf dem PC genutzt. In Umgebungen, wo es (noch) nicht
+// installiert/kompiliert ist, bleibt der Import optional — dann MUSS beim
+// Erzeugen der DB eine Database-Klasse via opts.Database übergeben werden.
+let Database = null;
+try {
+  Database = (await import('better-sqlite3')).default;
+} catch {
+  Database = null;   // opts.Database muss dann gesetzt werden (z.B. im Test)
+}
+
+import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Aufbewahrungsfrist für logs/errors (Tage)
+const RETENTION_DAYS = 90;
+
+// ---------------------------------------------------------------------------
+// Verbindung & Schema
+// ---------------------------------------------------------------------------
+
+export class WallboxDB {
+  /**
+   * @param {object} [opts]
+   * @param {string} [opts.file]  Pfad zur SQLite-Datei. ':memory:' für Tests.
+   *                              Default: <projektwurzel>/sessions.db
+   * @param {object} [opts.defaults]  Start-Settings (aus config.js), nur beim
+   *                                  ersten Anlegen verwendet.
+   */
+  constructor(opts = {}) {
+    const file = opts.file ?? path.resolve(__dirname, '..', 'sessions.db');
+    // DB-Klasse ist injizierbar: auf dem PC better-sqlite3 (Default),
+    // in der Test-Sandbox ein node:sqlite-Adapter. db.js selbst bleibt gleich.
+    const Driver = opts.Database ?? Database;
+    this.db = new Driver(file);
+    this.db.pragma('journal_mode = WAL');   // robuster bei parallelem Zugriff
+    this.db.pragma('foreign_keys = ON');
+    this._migrate();
+    if (opts.defaults) this._seedSettings(opts.defaults);
+  }
+
+  _migrate() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        username      TEXT UNIQUE NOT NULL,
+        pw_hash       TEXT NOT NULL,         -- scrypt-Hash
+        pw_salt       TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'admin',
+        created_at    TEXT NOT NULL,
+        last_login_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL                  -- JSON-serialisiert
+      );
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id            TEXT PRIMARY KEY,       -- 's_...' (String!)
+        wallbox_id    TEXT NOT NULL,
+        wallbox_name  TEXT,
+        guest_name    TEXT,
+        guest_email   TEXT,
+        mode          TEXT,                   -- 'voll' | 'limit'
+        limit_amount  REAL,                   -- € (bei mode=limit)
+        limit_kwh     REAL,
+        energy_kwh    REAL NOT NULL DEFAULT 0,
+        amount        REAL NOT NULL DEFAULT 0,
+        captured      REAL,                   -- tatsächlich abgebucht (€)
+        status        TEXT NOT NULL DEFAULT 'active',  -- active|completed|cancelled|error
+        paid          INTEGER NOT NULL DEFAULT 0,       -- 0/1
+        free_charge   INTEGER NOT NULL DEFAULT 0,       -- 0/1 (Bezahl-Schalter aus)
+        payment_ref   TEXT,                   -- Stripe PaymentIntent-ID
+        note          TEXT,
+        started_at    TEXT NOT NULL,
+        ended_at      TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS invoices (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_no    TEXT UNIQUE NOT NULL,   -- fortlaufende Belegnummer
+        session_id    TEXT NOT NULL,
+        wallbox_id    TEXT,
+        wallbox_name  TEXT,
+        guest_name    TEXT,
+        guest_email   TEXT,
+        energy_kwh    REAL NOT NULL,
+        price_per_kwh REAL NOT NULL,
+        amount        REAL NOT NULL,          -- berechnet
+        captured      REAL NOT NULL,          -- abgebucht
+        currency      TEXT NOT NULL DEFAULT 'eur',
+        payment_ref   TEXT,
+        pdf_path      TEXT,                   -- später: Pfad zum PDF-Beleg
+        created_at    TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS logs (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts         TEXT NOT NULL,
+        level      TEXT NOT NULL DEFAULT 'info',  -- info|warn
+        event      TEXT NOT NULL,                 -- z.B. 'chargingStarted'
+        wallbox_id TEXT,
+        session_id TEXT,
+        details    TEXT                            -- JSON oder Klartext
+      );
+
+      CREATE TABLE IF NOT EXISTS errors (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts         TEXT NOT NULL,
+        code       TEXT NOT NULL,                 -- z.B. 'OUT_OF_SYNC'
+        wallbox_id TEXT,
+        session_id TEXT,
+        details    TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
+      CREATE INDEX IF NOT EXISTS idx_logs_ts          ON logs(ts);
+      CREATE INDEX IF NOT EXISTS idx_errors_ts        ON errors(ts);
+      CREATE INDEX IF NOT EXISTS idx_invoices_session ON invoices(session_id);
+    `);
+  }
+
+  // Settings nur beim ersten Mal mit config.js-Defaults füllen.
+  _seedSettings(defaults) {
+    const have = this.getSetting('price_per_kwh');
+    if (have !== undefined) return;     // schon befüllt → nichts tun
+    const seed = {
+      price_per_kwh: defaults.payment?.pricePerKwh ?? 0.45,
+      reserve_amount: defaults.payment?.reserveAmountEur ?? 35,
+      currency: defaults.payment?.currency ?? 'eur',
+      min_capture_eur: defaults.payment?.minCaptureEur ?? 0.5,
+      // Bezahl-Schalter pro Box: true = Bezahlung erforderlich (Default)
+      pay_required_p30c: true,
+      pay_required_p30x: true,
+    };
+    for (const [k, v] of Object.entries(seed)) this.setSetting(k, v);
+  }
+
+  close() { this.db.close(); }
+
+  // -------------------------------------------------------------------------
+  // USERS (mehrere Admins, scrypt-Hash)
+  // -------------------------------------------------------------------------
+
+  _hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+    const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+    return { hash, salt };
+  }
+
+  /** Admin anlegen. Wirft bei doppeltem Benutzernamen. */
+  createUser(username, password, role = 'admin') {
+    if (!username || !password) throw new Error('username/password erforderlich');
+    const { hash, salt } = this._hashPassword(password);
+    const stmt = this.db.prepare(
+      `INSERT INTO users (username, pw_hash, pw_salt, role, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    const info = stmt.run(username, hash, salt, role, new Date().toISOString());
+    return { id: info.lastInsertRowid, username, role };
+  }
+
+  /** Passwort prüfen (zeitkonstant). Liefert User-Objekt oder null. */
+  verifyUser(username, password) {
+    const row = this.db.prepare(`SELECT * FROM users WHERE username = ?`).get(username);
+    if (!row) {
+      // Dummy-Hash rechnen, damit die Antwortzeit nicht verrät, ob es den
+      // Benutzer gibt (gegen User-Enumeration).
+      this._hashPassword(password);
+      return null;
+    }
+    const { hash } = this._hashPassword(password, row.pw_salt);
+    const a = Buffer.from(hash, 'hex');
+    const b = Buffer.from(row.pw_hash, 'hex');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    this.db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`)
+      .run(new Date().toISOString(), row.id);
+    return { id: row.id, username: row.username, role: row.role };
+  }
+
+  listUsers() {
+    return this.db.prepare(
+      `SELECT id, username, role, created_at, last_login_at FROM users ORDER BY id`
+    ).all();
+  }
+
+  countUsers() {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM users`).get().n;
+  }
+
+  changePassword(username, newPassword) {
+    const { hash, salt } = this._hashPassword(newPassword);
+    const info = this.db.prepare(
+      `UPDATE users SET pw_hash = ?, pw_salt = ? WHERE username = ?`
+    ).run(hash, salt, username);
+    return info.changes > 0;
+  }
+
+  deleteUser(username) {
+    return this.db.prepare(`DELETE FROM users WHERE username = ?`).run(username).changes > 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // SETTINGS (JSON-Werte, key/value)
+  // -------------------------------------------------------------------------
+
+  getSetting(key) {
+    const row = this.db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key);
+    return row ? JSON.parse(row.value) : undefined;
+  }
+
+  setSetting(key, value) {
+    this.db.prepare(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(key, JSON.stringify(value));
+    return value;
+  }
+
+  getAllSettings() {
+    const rows = this.db.prepare(`SELECT key, value FROM settings`).all();
+    const out = {};
+    for (const r of rows) out[r.key] = JSON.parse(r.value);
+    return out;
+  }
+
+  // -------------------------------------------------------------------------
+  // SESSIONS (Lade-Verlauf)
+  // -------------------------------------------------------------------------
+
+  createSession(s) {
+    const stmt = this.db.prepare(`
+      INSERT INTO sessions
+        (id, wallbox_id, wallbox_name, guest_name, guest_email, mode,
+         limit_amount, limit_kwh, energy_kwh, amount, captured, status,
+         paid, free_charge, payment_ref, note, started_at, ended_at)
+      VALUES
+        (@id, @wallbox_id, @wallbox_name, @guest_name, @guest_email, @mode,
+         @limit_amount, @limit_kwh, @energy_kwh, @amount, @captured, @status,
+         @paid, @free_charge, @payment_ref, @note, @started_at, @ended_at)
+    `);
+    const row = {
+      id: s.id,
+      wallbox_id: s.wallbox_id,
+      wallbox_name: s.wallbox_name ?? null,
+      guest_name: s.guest_name ?? null,
+      guest_email: s.guest_email ?? null,
+      mode: s.mode ?? null,
+      limit_amount: s.limit_amount ?? null,
+      limit_kwh: s.limit_kwh ?? null,
+      energy_kwh: s.energy_kwh ?? 0,
+      amount: s.amount ?? 0,
+      captured: s.captured ?? null,
+      status: s.status ?? 'active',
+      paid: s.paid ? 1 : 0,
+      free_charge: s.free_charge ? 1 : 0,
+      payment_ref: s.payment_ref ?? null,
+      note: s.note ?? null,
+      started_at: s.started_at ?? new Date().toISOString(),
+      ended_at: s.ended_at ?? null,
+    };
+    stmt.run(row);
+    return this.getSession(s.id);
+  }
+
+  getSession(id) {
+    return this.db.prepare(`SELECT * FROM sessions WHERE id = ?`).get(id) ?? null;
+  }
+
+  /** Aktive Session einer Box (für Live-Anzeige). */
+  getActiveSession(wallboxId) {
+    return this.db.prepare(
+      `SELECT * FROM sessions WHERE wallbox_id = ? AND status = 'active'
+       ORDER BY started_at DESC LIMIT 1`
+    ).get(wallboxId) ?? null;
+  }
+
+  updateSession(id, fields) {
+    const allowed = ['energy_kwh', 'amount', 'captured', 'status', 'paid',
+      'free_charge', 'payment_ref', 'note', 'ended_at', 'guest_name',
+      'guest_email', 'mode', 'limit_amount', 'limit_kwh'];
+    const sets = [];
+    const vals = {};
+    for (const [k, v] of Object.entries(fields)) {
+      if (!allowed.includes(k)) continue;
+      sets.push(`${k} = @${k}`);
+      vals[k] = (k === 'paid' || k === 'free_charge') ? (v ? 1 : 0) : v;
+    }
+    if (!sets.length) return this.getSession(id);
+    vals.id = id;
+    this.db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = @id`).run(vals);
+    return this.getSession(id);
+  }
+
+  listSessions(limit = 50) {
+    return this.db.prepare(
+      `SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?`
+    ).all(limit);
+  }
+
+  /** Verwaiste aktive Sessions (Daemon-Neustart / hängende) finden. */
+  listActiveSessions() {
+    return this.db.prepare(`SELECT * FROM sessions WHERE status = 'active'`).all();
+  }
+
+  /** Offene Sessions (active UND pending) — fuer den Auto-Aufraeumer. */
+  listOpenSessions() {
+    return this.db.prepare(
+      `SELECT * FROM sessions WHERE status IN ('active','pending')`
+    ).all();
+  }
+
+  // -------------------------------------------------------------------------
+  // INVOICES (Rechnungen, fortlaufende Belegnummer)
+  // -------------------------------------------------------------------------
+
+  _nextInvoiceNo() {
+    const year = new Date().getFullYear();
+    const row = this.db.prepare(
+      `SELECT invoice_no FROM invoices WHERE invoice_no LIKE ? ORDER BY id DESC LIMIT 1`
+    ).get(`${year}-%`);
+    let seq = 1;
+    if (row) {
+      const m = String(row.invoice_no).match(/-(\d+)$/);
+      if (m) seq = parseInt(m[1], 10) + 1;
+    }
+    return `${year}-${String(seq).padStart(5, '0')}`;
+  }
+
+  createInvoice(inv) {
+    const invoice_no = inv.invoice_no ?? this._nextInvoiceNo();
+    const stmt = this.db.prepare(`
+      INSERT INTO invoices
+        (invoice_no, session_id, wallbox_id, wallbox_name, guest_name,
+         guest_email, energy_kwh, price_per_kwh, amount, captured, currency,
+         payment_ref, pdf_path, created_at)
+      VALUES
+        (@invoice_no, @session_id, @wallbox_id, @wallbox_name, @guest_name,
+         @guest_email, @energy_kwh, @price_per_kwh, @amount, @captured, @currency,
+         @payment_ref, @pdf_path, @created_at)
+    `);
+    const row = {
+      invoice_no,
+      session_id: inv.session_id,
+      wallbox_id: inv.wallbox_id ?? null,
+      wallbox_name: inv.wallbox_name ?? null,
+      guest_name: inv.guest_name ?? null,
+      guest_email: inv.guest_email ?? null,
+      energy_kwh: inv.energy_kwh ?? 0,
+      price_per_kwh: inv.price_per_kwh ?? 0,
+      amount: inv.amount ?? 0,
+      captured: inv.captured ?? 0,
+      currency: inv.currency ?? 'eur',
+      payment_ref: inv.payment_ref ?? null,
+      pdf_path: inv.pdf_path ?? null,
+      created_at: inv.created_at ?? new Date().toISOString(),
+    };
+    const info = stmt.run(row);
+    return this.getInvoice(info.lastInsertRowid);
+  }
+
+  getInvoice(id) {
+    return this.db.prepare(`SELECT * FROM invoices WHERE id = ?`).get(id) ?? null;
+  }
+
+  getInvoiceBySession(sessionId) {
+    return this.db.prepare(`SELECT * FROM invoices WHERE session_id = ?`).get(sessionId) ?? null;
+  }
+
+  listInvoices(limit = 100) {
+    return this.db.prepare(
+      `SELECT * FROM invoices ORDER BY id DESC LIMIT ?`
+    ).all(limit);
+  }
+
+  setInvoicePdf(id, pdfPath) {
+    return this.db.prepare(`UPDATE invoices SET pdf_path = ? WHERE id = ?`)
+      .run(pdfPath, id).changes > 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // LOGS & ERRORS (90 Tage Aufbewahrung)
+  // -------------------------------------------------------------------------
+
+  log(event, { level = 'info', wallboxId = null, sessionId = null, details = null } = {}) {
+    this.db.prepare(
+      `INSERT INTO logs (ts, level, event, wallbox_id, session_id, details)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      new Date().toISOString(), level, event, wallboxId, sessionId,
+      details == null ? null : (typeof details === 'string' ? details : JSON.stringify(details))
+    );
+  }
+
+  logError(code, { wallboxId = null, sessionId = null, details = null } = {}) {
+    this.db.prepare(
+      `INSERT INTO errors (ts, code, wallbox_id, session_id, details)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(
+      new Date().toISOString(), code, wallboxId, sessionId,
+      details == null ? null : (typeof details === 'string' ? details : JSON.stringify(details))
+    );
+  }
+
+  listLogs(limit = 200) {
+    return this.db.prepare(`SELECT * FROM logs ORDER BY id DESC LIMIT ?`).all(limit);
+  }
+
+  listErrors(limit = 200) {
+    return this.db.prepare(`SELECT * FROM errors ORDER BY id DESC LIMIT ?`).all(limit);
+  }
+
+  /** logs/errors älter als RETENTION_DAYS löschen. Gibt gelöschte Zeilen zurück. */
+  pruneOld(days = RETENTION_DAYS) {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const l = this.db.prepare(`DELETE FROM logs WHERE ts < ?`).run(cutoff).changes;
+    const e = this.db.prepare(`DELETE FROM errors WHERE ts < ?`).run(cutoff).changes;
+    return { logs: l, errors: e, cutoff };
+  }
+}
+
+export default WallboxDB;

@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallbox Manager — Steinbock Chalets</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Archivo:wght@400;600;800&display=swap');
+
+  /* ===== FARBEN: DUNKEL (Standard) ===== */
+  :root, [data-theme="dark"] {
+    --bg:#0e1116; --panel:#171c24; --panel-hi:#1e242e; --border:#2a323f;
+    --text:#e4e9f0; --muted:#7b8696; --green:#34d058; --amber:#f0a020;
+    --red:#f04848; --blue:#3a96f0;
+    --glow1:#1a2330; --glow2:#16201a;
+  }
+
+  /* ===== FARBEN: HELL ===== */
+  [data-theme="light"] {
+    --bg:#f4f6fa; --panel:#ffffff; --panel-hi:#eef1f6; --border:#d8dee8;
+    --text:#1a212c; --muted:#697585; --green:#1f9e44; --amber:#c47a0a;
+    --red:#d63434; --blue:#1f6fd0;
+    --glow1:#e3ecf7; --glow2:#e6f3e9;
+  }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background:var(--bg); color:var(--text); font-family:'Archivo',sans-serif; min-height:100vh;
+    transition:background-color .3s, color .3s;
+    background-image:radial-gradient(circle at 20% 0%,var(--glow1) 0%,transparent 50%),
+                     radial-gradient(circle at 80% 100%,var(--glow2) 0%,transparent 50%);
+  }
+  header {
+    padding:28px 32px; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--bg); backdrop-filter:blur(8px); position:sticky; top:0; z-index:10;
+  }
+  header h1 { font-size:20px; font-weight:800; letter-spacing:-0.02em; display:flex; align-items:center; gap:12px; }
+  .logo-mark { width:32px; height:32px; border-radius:8px; background:linear-gradient(135deg,var(--green),#1a8a3a); display:grid; place-items:center; font-size:18px; }
+  .head-right { display:flex; align-items:center; gap:20px; }
+  .hdr-login { display:flex; align-items:center; gap:8px; }
+  .hdr-login input { background:var(--panel-hi); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 11px; font-size:13px; width:120px; }
+  .hdr-btn { background:var(--green); color:#06200f; border:none; border-radius:8px; padding:7px 14px; font-weight:600; font-size:13px; cursor:pointer; }
+  .hdr-btn.ghost { background:transparent; color:var(--muted); border:1px solid var(--border); }
+  .hdr-btn:hover { filter:brightness(1.08); }
+  .hdr-user { font-size:13px; color:var(--green); font-weight:600; }
+  .price-tag { font-family:'Space Mono',monospace; font-size:13px; color:var(--green); }
+  .clock { font-family:'Space Mono',monospace; color:var(--muted); font-size:13px; }
+
+  /* ===== THEME-UMSCHALTER ===== */
+  .theme-toggle { display:flex; background:var(--panel-hi); border:1px solid var(--border); border-radius:100px; padding:3px; gap:2px; }
+  .gear-btn { background:var(--panel-hi); border:1px solid var(--border); border-radius:100px; width:36px; height:36px; cursor:pointer; font-size:16px; display:flex; align-items:center; justify-content:center; transition:.15s; }
+  .gear-btn:hover { border-color:var(--blue); }
+  .cleanup-modal { position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:flex-start; justify-content:center; padding-top:80px; z-index:1000; }
+  .cleanup-panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:22px; width:90%; max-width:480px; max-height:85vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,.3); }
+  .cleanup-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .cleanup-head h3 { font-size:17px; font-weight:800; }
+  .cleanup-x { background:none; border:none; font-size:18px; cursor:pointer; color:var(--muted); }
+  .cleanup-desc { font-size:13px; color:var(--muted); line-height:1.5; margin-bottom:16px; }
+  .cleanup-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-top:1px solid var(--border); font-size:14px; }
+  .cleanup-row input[type=number] { background:var(--panel-hi); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 10px; font-size:14px; }
+  .theme-toggle button {
+    all:unset; cursor:pointer; padding:6px 10px; border-radius:100px; font-size:15px; line-height:1;
+    color:var(--muted); transition:background-color .2s, color .2s; display:grid; place-items:center;
+  }
+  .theme-toggle button:hover { color:var(--text); }
+  .theme-toggle button.active { background:var(--blue); color:#fff; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:20px; padding:28px 32px; max-width:1100px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:16px; overflow:hidden; transition:border-color .3s; }
+  .card.charging { border-color:var(--green); box-shadow:0 0 24px rgba(52,208,88,.12); }
+  .card.error { border-color:var(--red); }
+  .card.offline { opacity:.55; }
+  .card-head { padding:18px 22px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); }
+  .card-title { font-weight:700; font-size:17px; }
+  .card-ip { font-family:'Space Mono',monospace; font-size:11px; color:var(--muted); margin-top:2px; }
+
+  .badge { padding:5px 12px; border-radius:100px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; display:flex; align-items:center; gap:6px; }
+  .dot { width:7px; height:7px; border-radius:50%; }
+  .badge.charging { background:rgba(52,208,88,.15); color:var(--green); } .badge.charging .dot { background:var(--green); animation:pulse 1.4s infinite; }
+  .badge.ready { background:rgba(58,150,240,.15); color:var(--blue); } .badge.ready .dot { background:var(--blue); }
+  .badge.not_ready { background:rgba(123,134,150,.12); color:var(--muted); } .badge.not_ready .dot { background:var(--muted); }
+  .badge.suspended { background:rgba(240,160,32,.15); color:var(--amber); } .badge.suspended .dot { background:var(--amber); }
+  .badge.error { background:rgba(240,72,72,.15); color:var(--red); } .badge.error .dot { background:var(--red); }
+  .badge.offline { background:rgba(123,134,150,.1); color:var(--muted); } .badge.offline .dot { background:var(--muted); }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+  .status-hint { margin:14px 0 4px; padding:10px 14px; border-radius:10px; background:rgba(123,134,150,.08); color:var(--muted); font-size:13px; line-height:1.4; }
+  .btn-client { width:100%; padding:10px; border:1px solid var(--blue); background:transparent; color:var(--blue); border-radius:8px; cursor:pointer; font-weight:600; font-size:13px; transition:.15s; }
+  .btn-client:hover { background:rgba(58,150,240,.1); }
+
+  .metrics { padding:22px; display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .metric .label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .metric .value { font-family:'Space Mono',monospace; font-size:26px; font-weight:700; margin-top:4px; }
+  .metric .value small { font-size:13px; color:var(--muted); font-weight:400; }
+  .metric.full { grid-column:1/-1; }
+  .power-bar { height:18px; background:var(--panel-hi); border-radius:100px; margin-top:10px; overflow:hidden; }
+  .power-fill { height:100%; background:linear-gradient(90deg,var(--green),#6ee88a); border-radius:100px; transition:width .6s; }
+
+  .session-box { margin:0 22px 18px; padding:14px 16px; background:rgba(52,208,88,.08); border:1px solid rgba(52,208,88,.25); border-radius:10px; }
+  .session-box .row { display:flex; justify-content:space-between; align-items:baseline; }
+  .session-box .amt { font-family:'Space Mono',monospace; font-size:22px; font-weight:700; color:var(--green); }
+  .session-box .kwh { font-family:'Space Mono',monospace; font-size:13px; color:var(--green); opacity:.85; }
+  .session-box .guest { font-size:12px; color:var(--green); opacity:.75; margin-top:4px; }
+  .sess-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; padding-top:12px; border-top:1px solid rgba(52,208,88,.25); }
+  .sess-grid > div { display:flex; flex-direction:column; gap:2px; }
+  .sess-grid .sg-l { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--green); opacity:.75; }
+  .sess-grid .sg-v { font-size:14px; font-weight:700; color:var(--green); }
+
+  .current-sel { display:flex; align-items:center; gap:8px; padding:0 22px 18px; }
+  .current-sel label { font-size:12px; color:var(--muted); }
+  .current-hint { font-size:11px; color:var(--muted); padding:0 22px 16px; margin-top:-8px; opacity:.85; }
+  select { background:var(--panel-hi); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-family:'Space Mono',monospace; font-size:13px; }
+  .car-indicator { font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; padding:9px 12px; border-radius:8px; background:var(--panel-hi); border:1px solid var(--border); color:var(--muted); margin:0 22px 14px; }
+  .car-indicator.connected { background:rgba(52,208,88,.12); border-color:rgba(52,208,88,.35); color:var(--green); }
+
+  .controls { padding:0 22px 22px; display:flex; gap:10px; }
+  button.btn-start, button.btn-stop { font-family:'Archivo',sans-serif; font-weight:600; font-size:14px; padding:12px 20px; border-radius:10px; border:none; cursor:pointer; transition:transform .1s,filter .2s; flex:1; }
+  button.btn-start:active, button.btn-stop:active { transform:scale(.97); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .btn-start { background:var(--green); color:#06200f; }
+  .btn-stop { background:var(--red); color:#fff; }
+  .btn-start:hover:not(:disabled),.btn-stop:hover:not(:disabled){ filter:brightness(1.1); }
+
+  .sessions { max-width:1100px; margin:0 auto; padding:0 32px 40px; }
+  .sessions h2 { font-size:15px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:14px; }
+  .sess-filter { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  .sess-fbtn { padding:7px 16px; border:1px solid var(--border); background:transparent; color:var(--muted); border-radius:100px; cursor:pointer; font-size:13px; font-weight:600; transition:.15s; }
+  .sess-fbtn:hover { border-color:var(--blue); color:var(--text); }
+  .sess-fbtn.active { background:var(--blue); border-color:var(--blue); color:#fff; }
+  .btn-more { padding:9px 20px; border:1px solid var(--border); background:transparent; color:var(--blue); border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; transition:.15s; }
+  .btn-more:hover { background:rgba(58,150,240,.1); }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  th,td { text-align:left; padding:12px 16px; font-size:13px; border-bottom:1px solid var(--border); }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+  td { font-family:'Space Mono',monospace; }
+  tr:last-child td { border-bottom:none; }
+  .tag { padding:3px 9px; border-radius:6px; font-size:11px; font-weight:700; }
+  .tag.active { background:rgba(52,208,88,.15); color:var(--green); }
+  .tag.completed { background:rgba(123,134,150,.15); color:var(--muted); }
+  .tag.paid { background:rgba(58,150,240,.15); color:var(--blue); }
+
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--panel-hi); border:1px solid var(--border); color:var(--text); padding:12px 22px; border-radius:10px; font-size:14px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:100; }
+  .toast.show { opacity:1; }
+  .toast.err { border-color:var(--red); color:var(--red); }
+
+  /* ===== UPLOAD-BEREICH ===== */
+  .upload-section { max-width:1100px; margin:0 auto; padding:0 32px 40px; }
+  .upload-section h2 { font-size:15px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-bottom:14px; }
+  .upload-box { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px 22px; }
+  .upload-hint { font-size:13px; color:var(--muted); margin-bottom:14px; line-height:1.5; }
+  .upload-hint code { font-family:'Space Mono',monospace; background:var(--panel-hi); padding:1px 6px; border-radius:5px; font-size:12px; }
+  .upload-hint strong { color:var(--text); }
+  .upload-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .upload-row input[type=password], .upload-row input[type=file] {
+    flex:1; min-width:200px; background:var(--panel-hi); color:var(--text);
+    border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+    font-family:'Space Mono',monospace; font-size:13px;
+  }
+  .upload-row input[type=file]::file-selector-button {
+    background:var(--border); color:var(--text); border:none; border-radius:6px;
+    padding:6px 12px; margin-right:12px; cursor:pointer; font-family:inherit; font-size:12px;
+  }
+  .btn-upload { background:var(--blue); color:#fff; border:none; border-radius:8px; padding:11px 22px; font-weight:600; cursor:pointer; font-family:inherit; font-size:14px; transition:filter .2s; white-space:nowrap; }
+  .btn-upload:hover { filter:brightness(1.1); }
+  .link-btn { all:unset; cursor:pointer; color:var(--blue); text-decoration:underline; font-size:12px; margin-left:6px; }
+  .upload-filename { font-family:'Space Mono',monospace; font-size:12px; color:var(--muted); margin-top:10px; min-height:16px; }
+
+  /* ===== HANDY / RESPONSIVE (bis 720px) ===== */
+  @media (max-width:720px){
+    header { padding:16px 16px; flex-wrap:wrap; gap:10px; }
+    header h1 { font-size:17px; gap:9px; }
+    .logo-mark { width:28px; height:28px; font-size:16px; }
+    .head-right { gap:14px; width:100%; justify-content:space-between; flex-wrap:wrap; }
+
+    /* Settings-Leiste: untereinander statt nebeneinander */
+    .settings-wrap { padding:0 14px !important; }
+    .settings-bar { flex-direction:column; align-items:stretch !important; gap:14px !important; padding:16px !important; }
+    .settings-bar input { width:100% !important; }
+    .settings-bar button { width:100%; }
+
+    /* Karten: eine Spalte, volle Breite, weniger Rand */
+    .grid { grid-template-columns:1fr; gap:14px; padding:16px 14px; }
+    .card-head { padding:16px 18px; }
+    .metrics { padding:18px; gap:14px; }
+    .metric .value { font-size:22px; }
+    .session-box { margin:0 18px 16px; }
+    .current-sel { padding:0 18px 16px; flex-wrap:wrap; }
+    .car-indicator { margin:0 18px 12px; }
+
+    /* Buttons groß genug zum Tippen */
+    .controls { padding:0 18px 18px; gap:10px; }
+    button.btn-start, button.btn-stop { padding:14px 18px; font-size:15px; }
+
+    /* Lade-Verlauf: Tabelle -> Karten */
+    .sessions { padding:0 14px 32px; }
+    table, #sessTable thead, #sessTable tbody, #sessTable tr, #sessTable td { display:block; width:100%; }
+    #sessTable { border:none; background:transparent; }
+    #sessTable thead { display:none; }            /* Spaltenköpfe ausblenden */
+    #sessTable tr {
+      background:var(--panel); border:1px solid var(--border);
+      border-radius:12px; margin-bottom:12px; padding:6px 0;
+    }
+    #sessTable td {
+      border:none; padding:8px 16px; display:flex;
+      justify-content:space-between; align-items:center; text-align:right;
+    }
+    #sessTable td::before {
+      content:attr(data-label); text-align:left; color:var(--muted);
+      font-family:'Archivo',sans-serif; font-size:11px; text-transform:uppercase;
+      letter-spacing:.04em; font-weight:600; margin-right:12px;
+    }
+    /* leere "Noch keine Ladevorgänge"-Zeile sauber darstellen */
+    #sessTable td[colspan]::before { content:""; }
+    #sessTable td[colspan] { justify-content:center; text-align:center; }
+
+    /* Upload-Bereich auf dem Handy */
+    .upload-section { padding:0 14px 32px; }
+    .upload-row { flex-direction:column; align-items:stretch; }
+    .upload-row input[type=password], .upload-row input[type=file] { min-width:0; width:100%; }
+    .btn-upload { width:100%; }
+  }
+
+  /* ===== NSSM-DIENSTE-DASHBOARD (portabler Baustein) =====
+     Eigenständig & wiederverwendbar. Alle Klassen unter .svc-dashboard
+     gescoped, damit der Block keine fremden Styles überschreibt. CSS-Vars
+     mit Fallback, damit es auch in Apps ohne --panel/--blue läuft.
+     Einbau in andere App: dieses CSS + das ServiceDashboard-IIFE + ein
+     <div id="svcDashboard" class="svc-dashboard"></div> kopieren,
+     dann ServiceDashboard.mount('svcDashboard') aufrufen. */
+  .svc-dashboard { --svc-panel:var(--panel-hi,#1a1a1a); --svc-border:var(--border,#333); --svc-text:var(--text,#eee); --svc-muted:var(--muted,#888); --svc-blue:var(--blue,#3b82f6); --svc-green:var(--green,#34d058); --svc-red:var(--red,#e5484d); --svc-mono:'Space Mono',monospace; }
+  .svc-dashboard .svc-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .svc-dashboard .svc-head h4 { font-size:15px; font-weight:700; color:var(--svc-text); }
+  .svc-dashboard .svc-refresh { background:var(--svc-panel); border:1px solid var(--svc-border); color:var(--svc-muted); border-radius:8px; padding:5px 11px; font-size:12px; cursor:pointer; font-family:inherit; }
+  .svc-dashboard .svc-refresh:hover { border-color:var(--svc-blue); color:var(--svc-text); }
+  .svc-dashboard .svc-list { border:1px solid var(--svc-border); border-radius:10px; overflow:hidden; }
+  .svc-dashboard .svc-row { display:flex; align-items:center; gap:12px; padding:11px 14px; border-top:1px solid var(--svc-border); }
+  .svc-dashboard .svc-row:first-child { border-top:none; }
+  .svc-dashboard .svc-status { display:flex; align-items:center; gap:7px; min-width:90px; }
+  .svc-dashboard .svc-dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .svc-dashboard .svc-dot.running { background:var(--svc-green); }
+  .svc-dashboard .svc-dot.stopped { background:var(--svc-red); }
+  .svc-dashboard .svc-dot.unknown { background:var(--svc-muted); }
+  .svc-dashboard .svc-state { font-family:var(--svc-mono); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+  .svc-dashboard .svc-state.running { color:var(--svc-green); }
+  .svc-dashboard .svc-state.stopped { color:var(--svc-red); }
+  .svc-dashboard .svc-state.unknown { color:var(--svc-muted); }
+  .svc-dashboard .svc-info { flex:1; min-width:0; }
+  .svc-dashboard .svc-name { font-weight:600; font-size:13px; color:var(--svc-text); }
+  .svc-dashboard .svc-link { font-family:var(--svc-mono); font-size:11px; color:var(--svc-blue); text-decoration:none; word-break:break-all; }
+  .svc-dashboard .svc-link:hover { text-decoration:underline; }
+  .svc-dashboard .svc-link.none { color:var(--svc-muted); }
+  .svc-dashboard .svc-actions { display:flex; gap:6px; flex:none; }
+  .svc-dashboard .svc-btn { border:1px solid var(--svc-border); border-radius:8px; padding:4px 11px; font-size:11px; font-weight:600; cursor:pointer; background:var(--svc-panel); color:var(--svc-text); font-family:inherit; }
+  .svc-dashboard .svc-btn.start { color:var(--svc-green); border-color:var(--svc-green); }
+  .svc-dashboard .svc-btn.stop { color:var(--svc-red); border-color:var(--svc-red); }
+  .svc-dashboard .svc-btn:hover { filter:brightness(1.15); }
+  .svc-dashboard .svc-btn:disabled { opacity:.35; cursor:default; filter:none; }
+  .svc-dashboard .svc-lock { font-size:12px; color:var(--svc-muted); }
+  .svc-dashboard .svc-hint { font-size:12px; color:var(--svc-muted); line-height:1.55; margin-top:10px; }
+  .svc-divider { height:1px; background:var(--border); margin:20px 0 18px; }
+  @media (max-width:560px){
+    .svc-dashboard .svc-row { flex-wrap:wrap; }
+    .svc-dashboard .svc-status { min-width:0; }
+    .svc-dashboard .svc-actions { width:100%; }
+    .svc-dashboard .svc-btn { flex:1; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="logo-mark">⚡</span> Wallbox Manager <span style="font-size:11px;color:var(--green);font-weight:400;"></span></h1>
+  <div class="head-right">
+    <span class="price-tag" id="price"></span>
+    <span class="clock" id="clock"></span>
+    <div id="hdrLogin" class="hdr-login">
+      <input type="password" id="loginPw" placeholder="Passwort" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+      <button class="hdr-btn" onclick="doLogin()">Anmelden</button>
+    </div>
+    <div id="hdrLoggedIn" class="hdr-login" style="display:none;">
+      <span class="hdr-user">🔓 Angemeldet</span>
+      <button class="hdr-btn ghost" onclick="doLogout()">Abmelden</button>
+    </div>
+    <button id="gearBtn" class="gear-btn" onclick="toggleCleanupSettings()" title="Aufräumer-Einstellungen" style="display:none;">⚙️</button>
+    <div class="theme-toggle" id="themeToggle" title="Darstellung">
+      <button data-mode="light"  aria-label="Hell">☀️</button>
+      <button data-mode="dark"   aria-label="Dunkel">🌙</button>
+      <button data-mode="system" aria-label="Systemeinstellung">🖥️</button>
+    </div>
+  </div>
+</header>
+
+<div id="cleanupModal" class="cleanup-modal" style="display:none;">
+  <div class="cleanup-panel">
+    <div class="cleanup-head">
+      <h3>Auto-Aufräumer</h3>
+      <button class="cleanup-x" onclick="toggleCleanupSettings()">✕</button>
+    </div>
+    <p class="cleanup-desc">Beendet hängende Sessions automatisch. Ein angestecktes Auto wird <strong>nie</strong> angetastet — nur verwaiste Sessions ohne Fahrzeug.</p>
+    <label class="cleanup-row">
+      <span>Aufräumer aktiv</span>
+      <input type="checkbox" id="cleanupEnabled">
+    </label>
+    <label class="cleanup-row">
+      <span>Pending-Sessions beenden nach (Minuten)</span>
+      <input type="number" id="cleanupMinutes" min="1" max="240" style="width:70px;">
+    </label>
+    <button class="hdr-btn" style="margin-top:14px;width:100%;" onclick="saveCleanupSettings()">Speichern</button>
+
+    <div class="svc-divider"></div>
+
+    <div id="svcDashboard" class="svc-dashboard"></div>
+  </div>
+</div>
+
+
+<div class="settings-wrap" style="max-width:1100px;margin:0 auto;padding:0 32px;">
+  <div class="settings-bar" style="background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px 22px;display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap;">
+    <div>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Preis pro kWh (€)</div>
+      <input id="setPrice" type="number" step="0.01" style="background:var(--panel-hi);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:'Space Mono',monospace;width:120px;">
+    </div>
+    <div>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Reservierung „Voll laden" (€)</div>
+      <input id="setReserve" type="number" step="1" style="background:var(--panel-hi);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:'Space Mono',monospace;width:120px;">
+    </div>
+    <button onclick="saveSettings()" style="background:var(--blue);color:#fff;border:none;border-radius:8px;padding:11px 22px;font-weight:600;cursor:pointer;font-family:inherit;">Speichern</button>
+    <span id="setSaved" style="color:var(--green);font-size:13px;opacity:0;transition:opacity .3s;">✓ Gespeichert</span>
+  </div>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="sessions">
+  <h2>Lade-Verlauf</h2>
+  <div class="sess-filter" id="sessFilter"></div>
+  <table id="sessTable">
+    <thead><tr><th>#</th><th>Wallbox</th><th>Gast</th><th>Start</th><th>kWh</th><th>Betrag</th><th>Status</th></tr></thead>
+    <tbody id="sessBody"></tbody>
+  </table>
+  <div id="sessMoreWrap" style="text-align:center;margin-top:14px;display:none;">
+    <button id="sessMoreBtn" class="btn-more" onclick="toggleSessions()"></button>
+  </div>
+</div>
+
+<!-- ===== QR-CODES FÜR DIE WALLBOXEN ===== -->
+<div class="sessions" id="qrSection">
+  <h2>QR-Codes für die Wallboxen</h2>
+  <p style="color:var(--muted);font-size:13px;margin:-6px 0 16px;">
+    Diese QR-Codes an der jeweiligen Wallbox anbringen. Gäste scannen sie und
+    landen direkt auf der Lade-Seite für genau diese Box.
+  </p>
+  <div id="qrGrid" style="display:flex;flex-wrap:wrap;gap:20px;"></div>
+  <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+    <button id="qrPrintBtn" class="btn" style="background:var(--blue);color:#fff;border:0;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:600;">QR-Codes drucken</button>
+    <span style="color:var(--muted);font-size:12px;">Die Basis-URL kannst du unten anpassen, falls sich die Domain ändert.</span>
+  </div>
+  <div style="margin-top:12px;">
+    <label style="color:var(--muted);font-size:12px;display:block;margin-bottom:4px;">Basis-URL</label>
+    <input id="qrBaseUrl" type="text" value="https://wallbox.steinbockchalets-charge.com"
+           style="background:var(--panel-hi);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:'Space Mono',monospace;width:100%;max-width:480px;">
+  </div>
+</div>
+<div class="upload-section">
+  <h2>Webseiten aktualisieren</h2>
+
+  <!-- Login erfolgt im Header. Ohne Login: Hinweis. -->
+  <div class="upload-box" id="loginBox">
+    <p class="upload-hint">Geschützter Bereich. Bitte oben rechts im Header anmelden.</p>
+  </div>
+
+  <!-- Upload-Maske (versteckt bis eingeloggt) -->
+  <div class="upload-box" id="uploadBox" style="display:none;">
+    <p class="upload-hint">
+      Erlaubt sind <strong>.html</strong>, <strong>.css</strong>, <strong>.js</strong> — die Datei wird im
+      <code>public</code>-Ordner abgelegt (gleicher Dateiname ersetzt die alte Version).
+    </p>
+    <div class="upload-row">
+      <input type="file" id="uploadFile" accept=".html,.css,.js">
+      <button class="btn-upload" onclick="doUpload()">Hochladen</button>
+    </div>
+    <div class="upload-filename" id="uploadStatus"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/lib/qrcode.js"></script>
+<script>
+/* ===== THEME-UMSCHALTER (Hell / Dunkel / System) ===== */
+const THEME_KEY = 'wallbox-theme';        // gespeicherte Wahl: 'light' | 'dark' | 'system'
+const mql = window.matchMedia('(prefers-color-scheme: light)');
+
+function effectiveTheme(mode){
+  if(mode === 'system') return mql.matches ? 'light' : 'dark';
+  return mode;
+}
+function applyTheme(mode){
+  document.documentElement.setAttribute('data-theme', effectiveTheme(mode));
+  // aktiven Knopf markieren
+  document.querySelectorAll('#themeToggle button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+}
+function setTheme(mode){
+  try { localStorage.setItem(THEME_KEY, mode); } catch(e) {}
+  applyTheme(mode);
+}
+function lsGet(k){ try { return localStorage.getItem(k); } catch(e) { return null; } }
+function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e) {} }
+function lsDel(k){ try { localStorage.removeItem(k); } catch(e) {} }
+const TOKEN_KEY = 'wallbox-admin-token';   // Login-Token, damit Anmeldung Neuladen übersteht
+function initTheme(){
+  const saved = lsGet(THEME_KEY) || 'system';
+  applyTheme(saved);
+  document.querySelectorAll('#themeToggle button').forEach(b=>{
+    b.addEventListener('click', ()=> setTheme(b.dataset.mode));
+  });
+  // Wenn "System" gewählt ist und sich die Systemeinstellung ändert: mitziehen
+  mql.addEventListener('change', ()=>{
+    if((lsGet(THEME_KEY)||'system') === 'system') applyTheme('system');
+  });
+}
+initTheme();
+
+const API = "";
+const CURRENT_OPTIONS = [6,8,10,13,16,20,24,32];
+const MAX_POWER = 22000;
+let PRICE = 0.35, CUR = "EUR";
+// Lade-Verlauf: Zustand für Filter (welche Box) und Aufklappen
+let ALL_SESSIONS = [];        // alle geladenen Sessions (Cache)
+let WALLBOXEN = [];           // Boxen aus /api/state (für Filter-Buttons)
+let SESS_FILTER = 'alle';     // 'alle' | wallbox-id
+let SESS_EXPANDED = false;    // false = nur die letzten 5
+const SESS_COLLAPSED_COUNT = 5;
+function statusInfo(wb){
+  if(!wb.online) return { cls:'offline', label:'Offline', hint:'Wallbox nicht erreichbar' };
+  const s = wb.state; const car = !!wb.carConnected; const watt = wb.power || 0;
+  if(s==='charging' || (car && watt > 50)){ const kw=(watt/1000).toFixed(1).replace('.',','); return {cls:'charging',label:'Lädt',hint:`Fahrzeug lädt – ${kw} kW`}; }
+  if(s==='error')   return { cls:'error', label:'Fehler', hint:'Störung an der Wallbox' };
+  if(s==='startup') return { cls:'not_ready', label:'Start', hint:'Wallbox startet …' };
+  if(s==='suspended'){ return car ? {cls:'suspended',label:'Pausiert',hint:'Fahrzeug angeschlossen – wartet (zu wenig Überschuss oder nicht freigegeben)'} : {cls:'not_ready',label:'Bereit',hint:'Bereit – bitte Fahrzeug anschließen'}; }
+  if(s==='ready'){ return car ? {cls:'ready',label:'Bereit',hint:'Fahrzeug angeschlossen – bereit zum Laden'} : {cls:'ready',label:'Bereit',hint:'Bereit – bitte Fahrzeug anschließen'}; }
+  return car ? {cls:'ready',label:'Bereit',hint:'Fahrzeug angeschlossen – bereit zum Laden'} : {cls:'not_ready',label:'Bereit',hint:'Bereit – bitte Fahrzeug anschließen'};
+}
+
+function toast(m,err=false){ const t=document.getElementById('toast'); t.textContent=m; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2800); }
+
+async function api(path,method='GET',body=null){
+  const opt={method,headers:{'Content-Type':'application/json'}};
+  if(typeof UPLOAD_TOKEN !== 'undefined' && UPLOAD_TOKEN){ opt.headers['X-Auth-Token']=UPLOAD_TOKEN; }
+  if(body) opt.body=JSON.stringify(body);
+  const r=await fetch(API+path,opt);
+  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||r.statusText); }
+  return r.json();
+}
+
+async function start(id){
+  const sel=document.getElementById('cur-'+id);
+  const current=Number(sel.value);
+  try{ const r=await api(`/api/wallbox/${id}/start`,'POST',{current}); toast(`Ladung gestartet (${current} A)`); refresh(); }
+  catch(e){ toast('Fehler: '+e.message,true); }
+}
+async function stop(id){
+  try{ const r=await api(`/api/wallbox/${id}/stop`,'POST');
+    if(r.session && r.session.amount!=null) toast(`Beendet: ${r.session.energy_kwh} kWh = ${r.session.amount.toFixed(2)} ${CUR}`);
+    else toast('Ladung gestoppt');
+    refresh();
+  } catch(e){ toast('Fehler: '+e.message,true); }
+}
+
+function card(wb){
+  const st=wb.online?wb.state:'offline';
+  const si=statusInfo(wb);
+  const cls=si.cls==='charging'?'charging':si.cls==='error'?'error':!wb.online?'offline':'';
+  const power=wb.power||0; const pf=Math.min(100,(power/MAX_POWER)*100);
+  const curArr=(wb.currents||[0,0,0]);
+  const curMax=Math.max(...curArr);
+  const istLaden=curMax>0.2;
+  const stromLabel=istLaden?'Lädt mit':'Strom L1/L2/L3';
+  const stromWert=istLaden?(curMax.toFixed(1)+'<small> A</small>'):(curArr.map(x=>x.toFixed(1)).join(' / ')+'<small> A</small>');
+  const opts=CURRENT_OPTIONS.map(a=>`<option value="${a}">${a} A</option>`).join('');
+  const sessBox = wb.session ? (()=>{
+    const s=wb.session;
+    const dauer = s.startedAt ? fmtDauer(Date.now()-new Date(s.startedAt).getTime()) : '—';
+    const kw = (power/1000).toFixed(1).replace('.',',');
+    const istFrei = s.free;
+    return `
+    <div class="session-box">
+      <div class="row"><span class="kwh">${istFrei?'Lade-Info (gratis)':'Aktuelle Session'}</span><span class="amt">${istFrei?kw+' kW':s.amount.toFixed(2)+' '+CUR}</span></div>
+      <div class="row"><span class="guest">${s.guestName||'Gast'}</span><span class="kwh">${s.energyKwh.toFixed(2)} kWh</span></div>
+      <div class="sess-grid">
+        <div><span class="sg-l">Verbunden seit</span><span class="sg-v">${dauer}</span></div>
+        <div><span class="sg-l">Leistung</span><span class="sg-v">${kw} kW</span></div>
+        <div><span class="sg-l">Status</span><span class="sg-v">${istLaden?'lädt':'pausiert'}</span></div>
+      </div>
+    </div>`;
+  })() : '';
+  // Lade-Info bei angestecktem Auto OHNE bezahlte Session (z.B. Tesla, Bezahlung aus)
+  const plugBox = (wb.carConnected && !wb.session) ? (()=>{
+    const seit = wb.pluggedSince ? fmtDauer(Date.now()-wb.pluggedSince) : '—';
+    const kwh = (wb.pluggedKwh!=null) ? wb.pluggedKwh.toFixed(2)+' kWh' : '—';
+    const kw = (power/1000).toFixed(1).replace('.',',');
+    return `
+    <div class="session-box">
+      <div class="row"><span class="kwh">Lade-Info${wb.pay_required===false?' (gratis)':''}</span><span class="amt">${kw} kW</span></div>
+      <div class="sess-grid">
+        <div><span class="sg-l">Angesteckt seit</span><span class="sg-v">${seit}</span></div>
+        <div><span class="sg-l">Geladen</span><span class="sg-v">${kwh}</span></div>
+        <div><span class="sg-l">Status</span><span class="sg-v">${istLaden?'lädt':'pausiert'}</span></div>
+      </div>
+    </div>`;
+  })() : '';
+  return `
+  <div class="card ${cls}">
+    <div class="card-head">
+      <div><div class="card-title">${wb.name}</div><div class="card-ip">${wb.ip}</div></div>
+      <div class="badge ${si.cls}"><span class="dot"></span>${si.label}</div>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="label">Leistung</div><div class="value">${(power/1000).toFixed(2)}<small> kW</small></div></div>
+      <div class="metric"><div class="label">${stromLabel}</div><div class="value" style="font-size:18px">${stromWert}</div></div>
+      <div class="metric full"><div class="label">Leistung</div><div class="power-bar"><div class="power-fill" style="width:${pf}%"></div></div></div>
+      <div class="metric full"><div class="label">Zählerstand gesamt</div><div class="value" style="font-size:18px">${(wb.totalEnergy||0).toFixed(1)}<small> kWh</small></div></div>
+    </div>
+    <div class="status-hint">${si.hint}</div>
+    ${sessBox}
+    ${plugBox}
+    <span class="car-indicator ${wb.carConnected?'connected':''}">${wb.carConnected?'🔌 Auto verbunden':'○ Kein Auto'}</span>
+    <div class="current-sel">
+      <label>Max. Ladestrom:</label>
+      <select id="cur-${wb.id}">${opts}</select>
+    </div>
+    <div class="current-hint">Obergrenze — Auto und Wallbox bestimmen die tatsächliche Höhe.</div>
+    <div class="controls">
+      <button class="btn-start" onclick="start('${wb.id}')" ${!wb.online||wb.pay_required===false?'disabled':''} title="${wb.pay_required===false?'Bei Bezahlung aus lädt das Auto automatisch':'Ladung manuell starten'}">${wb.pay_required===false?'Auto-Start':'Start'}</button>
+      <button class="btn-stop" onclick="stop('${wb.id}')" ${!wb.online?'disabled':''}>Stopp</button>
+    </div>
+    <div style="margin-top:10px;">
+      <button class="btn-client" onclick="openClient('${wb.id}')">Gäste-Seite öffnen ↗</button>
+    </div>
+    ${payToggle(wb)}
+  </div>`;
+}
+
+// Bezahl-Schalter pro Box — nur sichtbar wenn als Admin eingeloggt.
+function payToggle(wb){
+  if (!isLoggedIn()) return '';
+  const required = wb.pay_required !== false;   // default: Bezahlung an
+  const warn = required ? '' :
+    '<div style="color:var(--amber);font-size:12px;font-weight:600;margin-top:6px;">⚠️ Bezahlung AUS — an dieser Box wird gratis geladen</div>';
+  return `
+    <div class="pay-toggle" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <span style="font-size:13px;color:var(--muted);">Bezahlung erforderlich</span>
+      <label class="switch" style="position:relative;display:inline-block;width:46px;height:26px;">
+        <input type="checkbox" ${required?'checked':''} onchange="setPayRequired('${wb.id}', this.checked)" style="opacity:0;width:0;height:0;">
+        <span class="slider" style="position:absolute;cursor:pointer;inset:0;background:${required?'var(--green)':'var(--border)'};border-radius:26px;transition:.2s;">
+          <span style="position:absolute;height:20px;width:20px;left:${required?'23px':'3px'};bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
+        </span>
+      </label>
+    </div>${warn}`;
+}
+
+function fmtTime(iso){ if(!iso) return '—'; const d=new Date(iso); return d.toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function fmtDauer(ms){ if(!ms||ms<0) return '—'; const min=Math.floor(ms/60000); if(min<60) return min+' min'; const h=Math.floor(min/60); const m=min%60; return h+' h '+(m<10?'0':'')+m+' min'; }
+
+function sessionRow(s){
+  const tag = s.paid ? '<span class="tag paid">Bezahlt</span>' : s.status==='active' ? '<span class="tag active">Aktiv</span>' : '<span class="tag completed">Beendet</span>';
+  return `<tr>
+    <td data-label="#">${s.id}</td><td data-label="Wallbox">${s.wallbox_name||s.wallbox_id}</td><td data-label="Gast">${s.guest_name||'—'}</td>
+    <td data-label="Start">${fmtTime(s.started_at)}</td>
+    <td data-label="kWh">${s.energy_kwh!=null?s.energy_kwh.toFixed(2):'—'}</td>
+    <td data-label="Betrag">${s.amount!=null?s.amount.toFixed(2)+' '+CUR:'—'}</td>
+    <td data-label="Status">${tag}</td>
+  </tr>`;
+}
+
+// Filter-Buttons: "Alle" + je eine Box
+function renderSessionFilter(){
+  const wrap = document.getElementById('sessFilter');
+  if(!wrap) return;
+  const btns = [{id:'alle',name:'Alle'}].concat(WALLBOXEN.map(w=>({id:w.id,name:w.name})));
+  wrap.innerHTML = btns.map(b=>
+    `<button class="sess-fbtn ${SESS_FILTER===b.id?'active':''}" onclick="setSessFilter('${b.id}')">${b.name}</button>`
+  ).join('');
+}
+
+function setSessFilter(id){
+  SESS_FILTER = id;
+  SESS_EXPANDED = false;   // bei Filterwechsel wieder einklappen
+  renderSessionFilter();
+  renderSessions();
+}
+
+function toggleSessions(){
+  SESS_EXPANDED = !SESS_EXPANDED;
+  renderSessions();
+}
+
+// Verlauf rendern: gefiltert + ein-/ausklappbar (Standard: letzte 5)
+function renderSessions(){
+  const body = document.getElementById('sessBody');
+  const moreWrap = document.getElementById('sessMoreWrap');
+  const moreBtn = document.getElementById('sessMoreBtn');
+  if(!body) return;
+
+  const filtered = (SESS_FILTER==='alle')
+    ? ALL_SESSIONS
+    : ALL_SESSIONS.filter(s => String(s.wallbox_id) === String(SESS_FILTER));
+
+  if(filtered.length === 0){
+    body.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Noch keine Ladevorgänge</td></tr>';
+    if(moreWrap) moreWrap.style.display = 'none';
+    return;
+  }
+
+  const visible = SESS_EXPANDED ? filtered : filtered.slice(0, SESS_COLLAPSED_COUNT);
+  body.innerHTML = visible.map(sessionRow).join('');
+
+  const hidden = filtered.length - SESS_COLLAPSED_COUNT;
+  if(hidden > 0){
+    moreWrap.style.display = 'block';
+    moreBtn.textContent = SESS_EXPANDED
+      ? '▲ Weniger anzeigen'
+      : `▼ ${hidden} weitere anzeigen`;
+  } else {
+    moreWrap.style.display = 'none';
+  }
+}
+
+async function refresh(){
+  try{
+    const data=await api('/api/state');
+    PRICE=data.pricePerKwh; CUR=data.currency;
+    document.getElementById('price').textContent=`${PRICE.toFixed(2)} ${CUR}/kWh`;
+    const sel={}; document.querySelectorAll('select[id^="cur-"]').forEach(s=>sel[s.id]=s.value);
+    WALLBOXEN = data.wallboxen;
+    document.getElementById('grid').innerHTML=data.wallboxen.map(card).join('');
+    Object.entries(sel).forEach(([id,v])=>{const s=document.getElementById(id); if(s)s.value=v;});
+    const sess=await api('/api/sessions?limit=200');
+    ALL_SESSIONS = sess.sessions || [];
+    renderSessionFilter();
+    renderSessions();
+  }catch(e){
+    document.getElementById('grid').innerHTML=`<div style="color:var(--red);padding:40px">Backend nicht erreichbar: ${e.message}</div>`;
+  }
+}
+function tick(){ document.getElementById('clock').textContent=new Date().toLocaleTimeString('de-DE'); }
+
+async function loadSettings(){
+  try{ const s=await api('/api/settings');
+    if(!document.activeElement || document.activeElement.id!=='setPrice') $('setPrice') && ($('setPrice').value=Number(s.price_per_kwh).toFixed(2));
+    if(!document.activeElement || document.activeElement.id!=='setReserve') $('setReserve') && ($('setReserve').value=Number(s.reserve_amount));
+    // Cleanup-Werte (nur wenn Modal nicht gerade bearbeitet wird)
+    if($('cleanupEnabled') && document.activeElement!==$('cleanupEnabled')) $('cleanupEnabled').checked = s.cleanup_enabled !== false;
+    if($('cleanupMinutes') && document.activeElement!==$('cleanupMinutes')) $('cleanupMinutes').value = s.cleanup_pending_minutes ?? 15;
+  }catch(e){}
+}
+async function saveSettings(){
+  try{ await api('/api/settings','POST',{price_per_kwh:Number(document.getElementById('setPrice').value),reserve_amount:Number(document.getElementById('setReserve').value)});
+    const el=document.getElementById('setSaved'); el.style.opacity=1; setTimeout(()=>el.style.opacity=0,2000); toast('Einstellungen gespeichert');
+  }catch(e){ toast('Fehler: '+e.message,true); }
+}
+function toggleCleanupSettings(){
+  const m=$('cleanupModal');
+  if(!m) return;
+  const open = m.style.display==='none' || !m.style.display;
+  m.style.display = open ? 'flex' : 'none';
+  if(open){
+    loadSettings();                          // frische Aufräumer-Werte
+    ServiceDashboard.mount('svcDashboard');  // Dienste-Baustein aufbauen
+    ServiceDashboard.startPolling(8000);     // Status mitlaufen lassen
+  } else {
+    ServiceDashboard.stopPolling();          // Polling aus, wenn Modal zu
+  }
+}
+async function saveCleanupSettings(){
+  try{
+    await api('/api/settings','POST',{
+      cleanup_enabled: $('cleanupEnabled').checked,
+      cleanup_pending_minutes: Number($('cleanupMinutes').value)||15,
+    });
+    toast('Aufräumer-Einstellungen gespeichert');
+    toggleCleanupSettings();
+  }catch(e){ toast('Fehler: '+e.message,true); }
+}
+const $ = id => document.getElementById(id);
+
+/* ===== LOGIN + DATEI-UPLOAD =====
+   Hinweis: Der eigentliche Schutz passiert im Backend.
+   Diese Seite ist nur die Eingabemaske.
+   Erwartete Backend-Endpunkte (später in server.js einzubauen):
+     POST /api/login   Body {password}        -> {token}
+     POST /api/upload  Header X-Auth-Token,    -> {ok:true}
+                       FormData: file          (Datei landet in public/)
+*/
+let UPLOAD_TOKEN = lsGet(TOKEN_KEY) || null;   // beim Laden aus localStorage wiederherstellen (überlebt Neuladen)
+
+function showLoggedIn(yes){
+  $('loginBox').style.display  = yes ? 'none' : 'block';
+  $('uploadBox').style.display = yes ? 'block' : 'none';
+  const hl=$('hdrLogin'), hli=$('hdrLoggedIn');
+  if(hl)  hl.style.display  = yes ? 'none' : 'flex';
+  if(hli) hli.style.display = yes ? 'flex' : 'none';
+  const gear=$('gearBtn');
+  if(gear) gear.style.display = yes ? 'flex' : 'none';
+}
+
+async function doLogin(){
+  const pw = $('loginPw').value;
+  if(!pw){ toast('Bitte Passwort eingeben', true); return; }
+  try{
+    const r = await api('/api/login','POST',{password:pw});
+    UPLOAD_TOKEN = r.token;
+    lsSet(TOKEN_KEY, r.token);   // dauerhaft speichern -> Anmeldung übersteht Neuladen
+    $('loginPw').value = '';
+    showLoggedIn(true);
+    toast('Angemeldet');
+    refresh();   // Boxen neu zeichnen -> Bezahl-Schalter erscheint
+    ServiceDashboard.refresh();   // Dienste neu zeichnen (Start/Stop erscheint), falls Modal offen
+  }catch(e){
+    toast('Anmeldung fehlgeschlagen: '+e.message, true);
+  }
+}
+
+function doLogout(){
+  UPLOAD_TOKEN = null;
+  lsDel(TOKEN_KEY);   // gespeicherten Token entfernen
+  showLoggedIn(false);
+  $('uploadStatus').textContent = '';
+  toast('Abgemeldet');
+  refresh();   // Boxen neu zeichnen -> Bezahl-Schalter verschwindet
+  ServiceDashboard.refresh();   // Dienste neu zeichnen (Start/Stop verschwindet), falls Modal offen
+}
+
+// Login-Status (für Bezahl-Schalter-Sichtbarkeit)
+function isLoggedIn(){ return !!UPLOAD_TOKEN; }
+
+// Bezahl-Schalter pro Box umlegen (serverseitig erzwungen)
+async function setPayRequired(id, required){
+  try{
+    await api('/api/wallbox/'+id+'/payment','POST',{required:required});
+    toast(required ? 'Bezahlung für '+id+' eingeschaltet' : 'Bezahlung für '+id+' AUS — gratis laden');
+    refresh();
+  }catch(e){
+    if(/401|403|token/i.test(e.message)){
+      toast('Sitzung abgelaufen — bitte neu anmelden', true);
+      doLogout();
+    } else {
+      toast('Schalten fehlgeschlagen: '+e.message, true);
+      refresh();
+    }
+  }
+}
+
+async function doUpload(){
+  if(!UPLOAD_TOKEN){ toast('Bitte zuerst anmelden', true); return; }
+  const fileInput = $('uploadFile');
+  const file = fileInput.files[0];
+  if(!file){ toast('Bitte eine Datei auswählen', true); return; }
+
+  // Dateityp-Prüfung schon im Browser (Backend prüft nochmal!)
+  const erlaubt = ['.html','.css','.js'];
+  const ok = erlaubt.some(ext => file.name.toLowerCase().endsWith(ext));
+  if(!ok){ toast('Nur .html, .css oder .js erlaubt', true); return; }
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  $('uploadStatus').textContent = 'Lade hoch: '+file.name+' …';
+  try{
+    const r = await fetch(API+'/api/upload', {
+      method:'POST',
+      headers:{ 'X-Auth-Token': UPLOAD_TOKEN },   // KEIN Content-Type setzen, der Browser macht das bei FormData selbst
+      body: fd
+    });
+    if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||r.statusText); }
+    $('uploadStatus').textContent = '✓ '+file.name+' hochgeladen';
+    fileInput.value = '';
+    toast('Datei hochgeladen');
+  }catch(e){
+    $('uploadStatus').textContent = '✗ Fehler bei '+file.name;
+    toast('Upload fehlgeschlagen: '+e.message, true);
+    // Token evtl. abgelaufen -> zurück zum Login
+    if(/401|403|token/i.test(e.message)){ doLogout(); }
+  }
+}
+
+// Beim Laden: gespeichertes Token gegen den Server pruefen. Nur wenn der
+// Server es bestaetigt (/api/me), gilt man als eingeloggt. So wird nach einem
+// Backend-Neustart (Token serverseitig weg) nicht faelschlich "eingeloggt"
+// angezeigt - genau der Bug, der zum "Schalter fehlgeschlagen" fuehrte.
+async function verifyLoginOnLoad(){
+  if(!UPLOAD_TOKEN){ showLoggedIn(false); return; }
+  try{
+    const r = await api('/api/me','GET');
+    if(r && r.ok){ showLoggedIn(true); }
+    else { UPLOAD_TOKEN=null; lsDel(TOKEN_KEY); showLoggedIn(false); }
+  }catch(e){
+    // Token ungueltig/abgelaufen -> sauber ausloggen, ohne Fehlermeldung
+    UPLOAD_TOKEN=null; lsDel(TOKEN_KEY); showLoggedIn(false);
+  }
+}
+verifyLoginOnLoad();
+
+// ===== NSSM-Dienste-Dashboard — portabler, eigenständiger Baustein =====
+// Einbau in andere App: dieses IIFE + das .svc-dashboard-CSS + ein
+//   <div id="svcDashboard" class="svc-dashboard"></div>  kopieren.
+// Erwartet eine globale api(path, method)-Funktion (Fetch mit Auth-Token)
+// und optional isLoggedIn()/toast(). Fehlen sie, nutzt der Baustein
+// sichere Fallbacks (Status-only, console-Logging).
+const ServiceDashboard = (function(){
+  let container = null;
+  let pollTimer = null;
+
+  function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  // Auf fremde Helfer defensiv zugreifen (Portabilität):
+  function call(path, method){ return (typeof api==='function') ? api(path, method) : fetch(path,{method}).then(r=>r.json()); }
+  function loggedIn(){ return (typeof isLoggedIn==='function') ? isLoggedIn() : false; }
+  function notify(msg, err){ if(typeof toast==='function') toast(msg, err); else console.log('[Dienste]', msg); }
+
+  function shell(){
+    container.innerHTML =
+      '<div class="svc-head">'+
+        '<h4>NSSM-Dienste (dieser PC)</h4>'+
+        '<button class="svc-refresh" type="button">↻ Aktualisieren</button>'+
+      '</div>'+
+      '<div class="svc-list"><div class="svc-hint">Lade Dienste …</div></div>'+
+      '<div class="svc-hint">Alle NSSM-Dienste dieses PCs werden automatisch erkannt. '+
+        'Start/Stop nur nach Anmeldung. Anzeigename und Link optional in <code>services.json</code>.</div>';
+    container.querySelector('.svc-refresh').addEventListener('click', load);
+  }
+
+  async function load(){
+    if(!container) return;
+    const listBox = container.querySelector('.svc-list');
+    let list;
+    try{
+      list = await call('/api/services','GET');
+    }catch(e){
+      listBox.innerHTML = '<div class="svc-hint" style="color:var(--svc-red);">Dienste nicht abrufbar: '+esc(e.message)+'</div>';
+      return;
+    }
+    if(!Array.isArray(list) || list.length===0){
+      listBox.innerHTML = '<div class="svc-hint">Keine NSSM-Dienste auf diesem PC gefunden.</div>';
+      return;
+    }
+    const admin = loggedIn();
+    listBox.innerHTML = list.map(svc => {
+      const st = (svc.status==='running'||svc.status==='stopped') ? svc.status : 'unknown';
+      const label = st==='running' ? 'läuft' : st==='stopped' ? 'gestoppt' : 'unbekannt';
+      const link = svc.url
+        ? '<a class="svc-link" href="'+esc(svc.url)+'" target="_blank" rel="noopener">'+esc(svc.url)+'</a>'
+        : '<span class="svc-link none">— kein Link —</span>';
+      let actions = '';
+      if(admin && svc.manageable){
+        const startDis = st==='running' ? 'disabled' : '';
+        const stopDis  = st==='stopped' ? 'disabled' : '';
+        actions =
+          '<div class="svc-actions">'+
+            '<button class="svc-btn start" '+startDis+' data-act="start" data-name="'+esc(svc.name)+'" type="button">Start</button>'+
+            '<button class="svc-btn stop" '+stopDis+' data-act="stop" data-name="'+esc(svc.name)+'" type="button">Stop</button>'+
+          '</div>';
+      } else if(admin && !svc.manageable){
+        actions = '<span class="svc-lock" title="nur lesen">🔒</span>';
+      }
+      return '<div class="svc-row">'+
+          '<div class="svc-status"><span class="svc-dot '+st+'"></span><span class="svc-state '+st+'">'+label+'</span></div>'+
+          '<div class="svc-info"><div class="svc-name">'+esc(svc.label||svc.name)+'</div>'+link+'</div>'+
+          actions+
+        '</div>';
+    }).join('');
+    listBox.querySelectorAll('.svc-btn[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => control(btn.dataset.name, btn.dataset.act));
+    });
+  }
+
+  async function control(name, action){
+    if(!loggedIn()){ notify('Bitte zuerst anmelden', true); return; }
+    try{
+      await call('/api/services/'+encodeURIComponent(name)+'/'+action,'POST');
+      notify(action==='start' ? 'Dienst gestartet: '+name : 'Dienst gestoppt: '+name);
+      setTimeout(load, 800);
+    }catch(e){
+      if(/401|403|token/i.test(e.message)){ notify('Sitzung abgelaufen — bitte neu anmelden', true); if(typeof doLogout==='function') doLogout(); }
+      else notify('Fehler: '+e.message, true);
+    }
+  }
+
+  // Öffentliche API des Bausteins:
+  return {
+    mount(el){ container = (typeof el==='string') ? document.getElementById(el) : el; if(container){ shell(); load(); } },
+    refresh(){ if(container) load(); },
+    startPolling(ms){ this.stopPolling(); pollTimer = setInterval(()=>load(), ms||8000); },
+    stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer = null; } },
+  };
+})();
+
+loadSettings(); setInterval(loadSettings,5000);
+setInterval(refresh,3000); setInterval(tick,1000); tick(); refresh();
+
+// ===== QR-Codes für die Wallboxen =====
+async function renderQRCodes(retry){
+  const grid = document.getElementById('qrGrid');
+  if (!grid) return;
+  if (typeof qrcode === 'undefined'){
+    if ((retry||0) < 20){ setTimeout(function(){ renderQRCodes((retry||0)+1); }, 150); return; }
+    grid.textContent = 'QR-Bibliothek konnte nicht geladen werden (/lib/qrcode.js). Bitte Seite mit Strg+F5 neu laden.';
+    grid.style.color = 'var(--red)';
+    return;
+  }
+  let boxes = [];
+  try {
+    const data = await api('/api/state');
+    boxes = data.wallboxen || [];
+  } catch(e) {
+    grid.textContent = 'Status konnte nicht geladen werden: ' + e.message;
+    grid.style.color = 'var(--red)';
+    return;
+  }
+  grid.innerHTML = '';
+  for (const wb of boxes){
+    const url = qrBase() + '/guest?wb=' + encodeURIComponent(wb.id);
+    const card = document.createElement('div');
+    card.className = 'qr-card';
+    card.style.cssText = 'background:#fff;border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center;width:230px;';
+
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:700;font-size:16px;color:#1a1a1a;margin-bottom:4px;';
+    title.textContent = wb.name || wb.id;
+
+    const sub = document.createElement('div');
+    sub.style.cssText = 'font-size:11px;color:#666;margin-bottom:10px;';
+    sub.textContent = 'Hier scannen zum Laden';
+
+    const box = document.createElement('div');
+    box.style.cssText = 'width:170px;height:170px;margin:0 auto;display:flex;align-items:center;justify-content:center;';
+    try {
+      const qr = qrcode(0, 'M');
+      qr.addData(url); qr.make();
+      box.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 4, scalable: true });
+    } catch(e){ box.textContent = 'QR-Fehler'; }
+
+    const link = document.createElement('div');
+    link.style.cssText = 'font-size:10px;color:#999;margin-top:8px;word-break:break-all;';
+    link.textContent = url;
+
+    card.appendChild(title); card.appendChild(sub); card.appendChild(box); card.appendChild(link);
+    grid.appendChild(card);
+  }
+}
+function qrBase(){ const el = document.getElementById('qrBaseUrl'); return (el ? el.value : '').replace(/\/+$/,''); }
+function openClient(id){ const url = qrBase() + '/guest?wb=' + encodeURIComponent(id); window.open(url, '_blank', 'noopener'); }
+(function(){
+  const inp = document.getElementById('qrBaseUrl');
+  if (inp) inp.addEventListener('input', function(){ clearTimeout(window._qrT); window._qrT = setTimeout(renderQRCodes, 400); });
+  const btn = document.getElementById('qrPrintBtn');
+  if (btn) btn.addEventListener('click', printQRCodes);
+})();
+function printQRCodes(){
+  const grid = document.getElementById('qrGrid');
+  if (!grid) return;
+  const w = window.open('', '_blank');
+  if (!w) { alert('Bitte Pop-ups für diese Seite erlauben, um zu drucken.'); return; }
+  const d = w.document;
+  d.title = 'Wallbox QR-Codes';
+  const style = d.createElement('style');
+  style.textContent = 'body{font-family:sans-serif;display:flex;flex-wrap:wrap;gap:30px;padding:30px;justify-content:center}'
+    + '.qr-print{border:2px solid #000;border-radius:14px;padding:24px;text-align:center;width:320px;page-break-inside:avoid}'
+    + '.qr-print svg{width:260px;height:260px}h2{margin:0 0 4px}p{color:#555;margin:0 0 14px}small{color:#999;font-size:10px;word-break:break-all}';
+  d.head.appendChild(style);
+  for (const card of grid.children){
+    const name = card.querySelector('div') ? card.querySelector('div').textContent : '';
+    const svg  = card.querySelector('svg') ? card.querySelector('svg').outerHTML : '';
+    const url  = card.lastChild ? card.lastChild.textContent : '';
+    const wrap = d.createElement('div');
+    wrap.className = 'qr-print';
+    const h2 = d.createElement('h2'); h2.textContent = name;
+    const p  = d.createElement('p');  p.textContent = 'Hier scannen zum Laden Ihres E-Autos';
+    const sv = d.createElement('div'); sv.innerHTML = svg;
+    const sm = d.createElement('small'); sm.textContent = url;
+    wrap.appendChild(h2); wrap.appendChild(p); wrap.appendChild(sv); wrap.appendChild(sm);
+    d.body.appendChild(wrap);
+  }
+  setTimeout(function(){ w.print(); }, 300);
+}
+renderQRCodes();
+</script>
+</body>
+</html>

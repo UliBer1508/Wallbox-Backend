@@ -1,0 +1,22 @@
+{
+  "name": "wallbox-backend",
+  "version": "2.0.0",
+  "description": "Keba P30 Lade-Backend für Gäste mit Stripe-Vorautorisierung (3-Layer-Architektur)",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "modbus-serial": "^8.0.21",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^9.0.1",
+    "stripe": "^17.5.0"
+  }
+}

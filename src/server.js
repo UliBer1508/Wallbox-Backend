@@ -206,6 +206,119 @@ export async function buildServer(opts = {}) {
     try { await manager.setPayRequired(w.id, req); } catch (e) { db.log('pay_init_error', { wallboxId: w.id, details: e.message }); }
   }
 
+  // === GRATIS-DOKUMENTATION (Auto-Ladung bei Bezahlung AUS) ================
+  // Steckt bei pay_required=false ein Auto an, ohne dass jemand etwas klickt
+  // (Tesla-Ueberschuss-Modus), wird das jetzt als Gratis-Session dokumentiert:
+  //   - Einstecken  -> Session 'Auto-Ladung' anlegen (free_charge=1)
+  //   - alle 30 s   -> kWh + Ersparnis-Betrag aus Zaehlerstand aktualisieren
+  //   - Abstecken   -> Session mit finalen kWh abschliessen
+  // Der Start-Zaehlerstand wird in der note gespeichert (start_total_kwh=...),
+  // dadurch ueberlebt die Messung auch einen Backend-Neustart exakt
+  // (Prinzip: Abrechnung ueber Gesamtzaehlerstand, wie ueberall im Projekt).
+  // Der Bezahl-Schalter wird hierbei bewusst NICHT zurueckgesetzt — der
+  // Tesla-Modus bleibt an, bis er im Admin umgelegt wird (wie bisher).
+
+  const AUTO_GUEST_NAME = 'Auto-Ladung';
+  const AUTO_UPDATE_MS = 30 * 1000;   // Live-Aktualisierung alle 30 s
+
+  function autoNoteStartKwh(note) {
+    const m = String(note || '').match(/start_total_kwh=([\d.]+)/);
+    return m ? Number(m[1]) : null;
+  }
+  function findOpenAutoSession(wallboxId) {
+    const s = db.getActiveSession(wallboxId);
+    return (s && s.free_charge && s.guest_name === AUTO_GUEST_NAME) ? s : null;
+  }
+  function priceNow() { return Number(db.getSetting('price_per_kwh')) || 0; }
+
+  function openAutoSession(wallboxId, totalKwh) {
+    if (db.getSetting(`pay_required_${wallboxId}`) !== false) return null; // nur bei Bezahlung AUS
+    if (db.getActiveSession(wallboxId)) return null;                       // es laeuft schon eine Session
+    const id = 's_auto_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const wb = cfg.wallboxes.find((w) => w.id === wallboxId);
+    db.createSession({
+      id, wallbox_id: wallboxId, wallbox_name: wb?.name,
+      guest_name: AUTO_GUEST_NAME, mode: 'voll', free_charge: 1, status: 'active',
+      note: `auto-gratis;start_total_kwh=${totalKwh ?? ''}`,
+      started_at: new Date().toISOString(),
+    });
+    db.log('auto_session_start', { wallboxId, sessionId: id, details: { start_total_kwh: totalKwh } });
+    return id;
+  }
+
+  function closeAutoSession(sess, { totalKwh = null, kwhSincePlug = null, reason = '' } = {}) {
+    const startKwh = autoNoteStartKwh(sess.note);
+    let energy;
+    if (totalKwh != null && startKwh != null) energy = Math.max(0, totalKwh - startKwh);
+    else if (kwhSincePlug != null) energy = Math.max(0, kwhSincePlug);
+    else energy = Math.max(0, sess.energy_kwh ?? 0);   // Fallback: letzter Live-Stand
+    const amount = +(energy * priceNow()).toFixed(2);
+    db.updateSession(sess.id, {
+      energy_kwh: energy, amount,
+      status: 'completed', ended_at: new Date().toISOString(),
+      note: (sess.note ? sess.note + ' ' : '') + (reason ? `[${reason}]` : ''),
+    });
+    db.log('auto_session_end', { wallboxId: sess.wallbox_id, sessionId: sess.id, details: { energy, amount, reason } });
+  }
+
+  // Einstecken -> Gratis-Session anlegen (nur wenn Bezahlung AUS, keine Session)
+  facade.on('cablePlugged', ({ wallboxId, totalKwh }) => {
+    try { openAutoSession(wallboxId, totalKwh); }
+    catch (e) { db.log('auto_session_start_error', { wallboxId, details: e.message }); }
+  });
+
+  // Abstecken -> offene Gratis-Session mit finalen kWh abschliessen
+  facade.on('cableDisconnected', ({ wallboxId, kwhSincePlug, totalKwh }) => {
+    try {
+      const sess = findOpenAutoSession(wallboxId);
+      if (sess) closeAutoSession(sess, { totalKwh, kwhSincePlug, reason: 'abgesteckt' });
+    } catch (e) { db.log('auto_session_end_error', { wallboxId, details: e.message }); }
+  });
+
+  // Live-Aktualisierung: kWh + Ersparnis der offenen Gratis-Sessions
+  async function updateAutoSessions() {
+    for (const w of cfg.wallboxes) {
+      try {
+        const sess = findOpenAutoSession(w.id);
+        if (!sess) continue;
+        const st = await facade.getState(w.id);
+        const totalKwh = st?.hardware?.totalKwh;
+        const startKwh = autoNoteStartKwh(sess.note);
+        if (totalKwh == null || startKwh == null) continue;
+        const energy = Math.max(0, totalKwh - startKwh);
+        db.updateSession(sess.id, { energy_kwh: energy, amount: +(energy * priceNow()).toFixed(2) });
+      } catch (e) { db.log('auto_session_update_error', { wallboxId: w.id, details: e.message }); }
+    }
+  }
+  const autoTimer = setInterval(updateAutoSessions, AUTO_UPDATE_MS);
+  if (autoTimer.unref) autoTimer.unref();
+
+  // Neustart-Wiederaufnahme (verzoegert, damit der erste Poll-Zyklus durch ist):
+  //   - offene Gratis-Session + Auto steckt noch + Bezahlung AUS -> weiterfuehren
+  //     (kWh stimmen exakt, da Start-Zaehlerstand in der note steht)
+  //   - offene Gratis-Session, aber Auto weg oder Bezahlung AN -> abschliessen
+  //   - keine Session, aber Auto steckt + Bezahlung AUS -> jetzt anlegen
+  setTimeout(async () => {
+    for (const w of cfg.wallboxes) {
+      try {
+        const st = await facade.getState(w.id);
+        if (!st?.hardware) continue;   // noch kein Snapshot -> nicht raten
+        const plugged = !!st.hardware.plugged;
+        const totalKwh = st.hardware.totalKwh ?? null;
+        const payOff = db.getSetting(`pay_required_${w.id}`) === false;
+        const sess = findOpenAutoSession(w.id);
+        if (sess && (!plugged || !payOff)) {
+          closeAutoSession(sess, { totalKwh: plugged ? totalKwh : null, reason: 'nach Neustart geschlossen' });
+        } else if (!sess && payOff && plugged) {
+          openAutoSession(w.id, totalKwh);
+        }
+      } catch (e) { db.log('auto_session_recover_error', { wallboxId: w.id, details: e.message }); }
+    }
+  }, 15 * 1000);
+
+  const autoGratis = { open: openAutoSession, close: closeAutoSession, find: findOpenAutoSession };
+  // ========================================================================
+
   // === AUTO-AUFRÄUMER für hängende Sessions ===============================
   // Sicherheitsnetz gegen Abstürze/Stromausfall. Schliesst NUR die DB-Session
   // (Hardware wird NIE angefasst). Regeln bewusst konservativ:
@@ -265,7 +378,7 @@ export async function buildServer(opts = {}) {
   app.use(cors());
   app.use(express.json());
 
-  registerRoutes(app, { db, facade, billing, manager });
+  registerRoutes(app, { db, facade, billing, manager, autoGratis });
 
   // upload.js einbinden (falls vorhanden). Wir geben unsere Token-Prüfung
   // mit, damit EIN Login für Admin UND Datei-Upload gilt, und unterdrücken
@@ -297,7 +410,7 @@ async function makeRealStripe() {
 // Routen
 // ---------------------------------------------------------------------------
 
-function registerRoutes(app, { db, facade, billing, manager }) {
+function registerRoutes(app, { db, facade, billing, manager, autoGratis }) {
   const wbIds = new Set(cfg.wallboxes.map((w) => w.id));
   const wbCfg = (id) => cfg.wallboxes.find((w) => w.id === id);
 
@@ -373,6 +486,19 @@ function registerRoutes(app, { db, facade, billing, manager }) {
     db.log('pay_switch', { wallboxId: id, details: { required } });
     // Manager informieren: bei "aus" nur lesen (Tesla laedt frei), bei "an" sperren.
     try { await manager.setPayRequired(id, required); } catch (e) { db.log('pay_switch_error', { wallboxId: id, details: e.message }); }
+    // Gratis-Dokumentation: Schalter AUS + Auto steckt bereits -> Gratis-Session
+    // jetzt oeffnen (Zaehlerstand ab diesem Moment). Schalter AN -> offene
+    // Gratis-Session mit finalen kWh abschliessen.
+    try {
+      const st = await facade.getState(id);
+      const totalKwh = st?.hardware?.totalKwh ?? null;
+      if (!required) {
+        if (st?.hardware?.plugged) autoGratis.open(id, totalKwh);
+      } else {
+        const sess = autoGratis.find(id);
+        if (sess) autoGratis.close(sess, { totalKwh, reason: 'Bezahlung eingeschaltet' });
+      }
+    } catch (e) { db.log('auto_session_toggle_error', { wallboxId: id, details: e.message }); }
     res.json({ ok: true, wallboxId: id, pay_required: required });
   });
 
@@ -426,6 +552,12 @@ function registerRoutes(app, { db, facade, billing, manager }) {
     try {
       const id = req.params.id;
       const ampere = Number(req.body?.current) || (wbCfg(id)?.maxCurrentA ?? 16);
+      // Offene Auto-Gratis-Session vorher abschliessen (sonst zwei aktive Sessions)
+      const openAuto = autoGratis.find(id);
+      if (openAuto) {
+        const st = await facade.getState(id).catch(() => null);
+        autoGratis.close(openAuto, { totalKwh: st?.hardware?.totalKwh ?? null, reason: 'Admin-Start' });
+      }
       const { sessionId } = await facade.requestCharge(id, { modus: 'voll' });
       // Admin-Start = direkt laden, ohne Zahlung; als free_charge markieren
       db.createSession({
@@ -472,6 +604,13 @@ function registerRoutes(app, { db, facade, billing, manager }) {
       const payRequired = db.getSetting(`pay_required_${id}`) !== false;
       const price = db.getSetting('price_per_kwh');
       const limitKwh = (mode === 'limit' && limitAmount) ? Number(limitAmount) / price : null;
+
+      // Offene Auto-Gratis-Session vorher abschliessen (sonst zwei aktive Sessions)
+      const openAuto = autoGratis.find(id);
+      if (openAuto) {
+        const st = await facade.getState(id).catch(() => null);
+        autoGratis.close(openAuto, { totalKwh: st?.hardware?.totalKwh ?? null, reason: 'Gast-Start' });
+      }
 
       // Vormerkung an der Fassade (Box wird gestoppt gehalten)
       const { sessionId } = await facade.requestCharge(id, {

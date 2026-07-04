@@ -203,12 +203,29 @@ export class WallboxManager extends EventEmitter {
     if (snap.plugged && (!prev || !prev.plugged)) {
       unit.plugTs = this._now();
       unit.plugStartKwh = snap.totalKwh ?? null;
+      // NEU (Gratis-Dokumentation): Einstecken nach oben melden, damit der
+      // Abrechnungslayer bei Bezahlung AUS eine Gratis-Session anlegen kann.
+      this.emit('cablePlugged', {
+        wallboxId: unit.id,
+        totalKwh: snap.totalKwh ?? null,   // Zaehlerstand beim Einstecken
+        ts: unit.plugTs,
+      });
     }
     if (prev && prev.plugged && !snap.plugged) {
+      // NEU: geladene kWh seit Einstecken VOR dem Zuruecksetzen berechnen
+      // (Gesamtzaehlerstand-Differenz — wie ueberall im Projekt), damit der
+      // Abrechnungslayer eine Gratis-Session mit korrekten kWh abschliessen kann.
+      const kwhSincePlug = (unit.plugStartKwh != null && snap.totalKwh != null)
+        ? Math.max(0, snap.totalKwh - unit.plugStartKwh) : null;
       // Abgesteckt: Einsteck-Kontext zuruecksetzen
       unit.plugTs = null;
       unit.plugStartKwh = null;
-      this.emit('cableDisconnected', { wallboxId: unit.id, sessionId: unit.session?.sessionId });
+      this.emit('cableDisconnected', {
+        wallboxId: unit.id,
+        sessionId: unit.session?.sessionId,
+        kwhSincePlug,                       // kWh seit Einstecken oder null
+        totalKwh: snap.totalKwh ?? null,    // Zaehlerstand beim Abstecken
+      });
       if (unit.sm.isCharging()) {
         await this._beginStop(unit, 'Kabel gezogen');
       }

@@ -58,6 +58,7 @@ export const FACADE_EVENTS = Object.freeze([
   'limitReached',
   'chargingStopped',
   'cableDisconnected',
+  'cablePlugged',      // Auto eingesteckt (fuer Gratis-Dokumentation bei Bezahlung AUS)
   'errorOccurred',
   'connectionLost',
   'connectionRestored',

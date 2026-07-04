@@ -138,6 +138,9 @@
   .tag.active { background:rgba(52,208,88,.15); color:var(--green); }
   .tag.completed { background:rgba(123,134,150,.15); color:var(--muted); }
   .tag.paid { background:rgba(58,150,240,.15); color:var(--blue); }
+  .tag.free { background:rgba(240,159,39,.15); color:#f0b357; }
+  tr.row-free td { background:rgba(240,159,39,.05); }
+  .amt-free { color:#f0b357; font-weight:700; }
 
   .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:var(--panel-hi); border:1px solid var(--border); color:var(--text); padding:12px 22px; border-radius:10px; font-size:14px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:100; }
   .toast.show { opacity:1; }
@@ -340,6 +343,7 @@
   <div id="sessMoreWrap" style="text-align:center;margin-top:14px;display:none;">
     <button id="sessMoreBtn" class="btn-more" onclick="toggleSessions()"></button>
   </div>
+  <div id="sessSaved" style="display:none;text-align:right;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);font-size:13px;color:#f0b357;"></div>
 </div>
 
 <!-- ===== QR-CODES FÜR DIE WALLBOXEN ===== -->
@@ -564,12 +568,21 @@ function fmtTime(iso){ if(!iso) return '—'; const d=new Date(iso); return d.to
 function fmtDauer(ms){ if(!ms||ms<0) return '—'; const min=Math.floor(ms/60000); if(min<60) return min+' min'; const h=Math.floor(min/60); const m=min%60; return h+' h '+(m<10?'0':'')+m+' min'; }
 
 function sessionRow(s){
-  const tag = s.paid ? '<span class="tag paid">Bezahlt</span>' : s.status==='active' ? '<span class="tag active">Aktiv</span>' : '<span class="tag completed">Beendet</span>';
-  return `<tr>
-    <td data-label="#">${s.id}</td><td data-label="Wallbox">${s.wallbox_name||s.wallbox_id}</td><td data-label="Gast">${s.guest_name||'—'}</td>
+  // Gratis-Sessions (free_charge=1): Amber-Tag, Betrag = Ersparnis (amber),
+  // Auto-Ladung = automatisch dokumentierte Ladung bei "Bezahlung aus".
+  let tag;
+  if (s.free) {
+    tag = (s.status==='active' ? '<span class="tag active">Aktiv</span> ' : '') + '<span class="tag free">Gratis</span>';
+  } else {
+    tag = s.paid ? '<span class="tag paid">Bezahlt</span>' : s.status==='active' ? '<span class="tag active">Aktiv</span>' : '<span class="tag completed">Beendet</span>';
+  }
+  const gast = (s.free && s.guest_name==='Auto-Ladung') ? '🔌 Auto-Ladung' : (s.guest_name||'—');
+  const betrag = s.amount!=null ? s.amount.toFixed(2)+' '+CUR : '—';
+  return `<tr${s.free?' class="row-free"':''}>
+    <td data-label="#">${s.id}</td><td data-label="Wallbox">${s.wallbox_name||s.wallbox_id}</td><td data-label="Gast">${gast}</td>
     <td data-label="Start">${fmtTime(s.started_at)}</td>
     <td data-label="kWh">${s.energy_kwh!=null?s.energy_kwh.toFixed(2):'—'}</td>
-    <td data-label="Betrag">${s.amount!=null?s.amount.toFixed(2)+' '+CUR:'—'}</td>
+    <td data-label="Betrag"${s.free?' class="amt-free"':''}>${betrag}</td>
     <td data-label="Status">${tag}</td>
   </tr>`;
 }
@@ -578,7 +591,9 @@ function sessionRow(s){
 function renderSessionFilter(){
   const wrap = document.getElementById('sessFilter');
   if(!wrap) return;
-  const btns = [{id:'alle',name:'Alle'}].concat(WALLBOXEN.map(w=>({id:w.id,name:w.name})));
+  const btns = [{id:'alle',name:'Alle'}]
+    .concat(WALLBOXEN.map(w=>({id:w.id,name:w.name})))
+    .concat([{id:'gratis',name:'Gratis'}]);
   wrap.innerHTML = btns.map(b=>
     `<button class="sess-fbtn ${SESS_FILTER===b.id?'active':''}" onclick="setSessFilter('${b.id}')">${b.name}</button>`
   ).join('');
@@ -605,7 +620,17 @@ function renderSessions(){
 
   const filtered = (SESS_FILTER==='alle')
     ? ALL_SESSIONS
-    : ALL_SESSIONS.filter(s => String(s.wallbox_id) === String(SESS_FILTER));
+    : (SESS_FILTER==='gratis')
+      ? ALL_SESSIONS.filter(s => s.free)
+      : ALL_SESSIONS.filter(s => String(s.wallbox_id) === String(SESS_FILTER));
+
+  // Ersparnis-Summe ueber alle geladenen Gratis-Sessions (PV statt Netz/Gast-Tarif)
+  const saved = ALL_SESSIONS.reduce((sum,s)=> sum + (s.free && s.amount!=null ? s.amount : 0), 0);
+  const savedEl = document.getElementById('sessSaved');
+  if (savedEl) {
+    savedEl.style.display = saved > 0 ? 'block' : 'none';
+    savedEl.innerHTML = '☀️ Gespart gesamt: <b>' + saved.toFixed(2) + ' ' + CUR + '</b>';
+  }
 
   if(filtered.length === 0){
     body.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Noch keine Ladevorgänge</td></tr>';

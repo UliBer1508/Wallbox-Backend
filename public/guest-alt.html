@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Laden — Steinbock Chalets</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=Inter:wght@400;500;600&display=swap');
+  :root { --bg:#f4f1ea; --card:#fff; --ink:#1c2722; --muted:#7a8580; --green:#2f7d4f; --green-dk:#1f5c39; --green-li:#eaf4ee; --border:#e3ddd0; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  body { background:var(--bg); color:var(--ink); font-family:'Inter',sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; background-image:radial-gradient(circle at 50% 0%,#e8f0e9 0%,transparent 60%); }
+  .wrap { width:100%; max-width:440px; padding:24px 20px 40px; flex:1; }
+
+  /* ===== SPRACHUMSCHALTER (in der Welcome-Karte) ===== */
+  .welcome-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .lang-toggle { display:flex; background:#fafaf7; border:1px solid var(--border); border-radius:100px; padding:3px; gap:2px; flex-shrink:0; }
+  .lang-toggle button { all:unset; cursor:pointer; padding:4px 11px; border-radius:100px; font-size:12px; font-weight:600; color:var(--muted); transition:background-color .2s,color .2s; }
+  .lang-toggle button.active { background:var(--green); color:#fff; }
+
+  .brand { text-align:center; margin:16px 0 24px; }
+  .brand .mark { font-size:40px; }
+  .brand h1 { font-family:'Fraunces',serif; font-size:26px; font-weight:600; margin-top:6px; }
+  .brand p { color:var(--muted); font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:22px; padding:28px 24px; box-shadow:0 8px 32px rgba(28,39,34,.06); }
+  .step-label { font-size:12px; color:var(--green); font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+  h2 { font-family:'Fraunces',serif; font-size:23px; font-weight:600; margin:8px 0 6px; }
+  .sub { color:var(--muted); font-size:15px; line-height:1.5; margin-bottom:22px; }
+  .wb-pill { display:inline-flex; align-items:center; gap:8px; background:var(--green-li); color:var(--green-dk); padding:8px 14px; border-radius:100px; font-size:13px; font-weight:600; margin-bottom:18px; }
+  label { display:block; font-size:13px; font-weight:600; margin:16px 0 6px; }
+  input { width:100%; padding:15px 16px; border:1.5px solid var(--border); border-radius:13px; font-size:16px; font-family:inherit; background:#fafaf7; }
+  input:focus { outline:none; border-color:var(--green); background:#fff; }
+  .mode-opts { display:grid; gap:10px; margin-top:8px; }
+  .mode-opt { border:1.5px solid var(--border); border-radius:14px; padding:16px; cursor:pointer; transition:all .15s; }
+  .mode-opt.active { border-color:var(--green); background:var(--green-li); }
+  .mode-opt .t { font-weight:600; font-size:15px; }
+  .mode-opt .d { font-size:13px; color:var(--muted); margin-top:3px; }
+  .limit-input { margin-top:12px; }
+  .btn { width:100%; padding:17px; border:none; border-radius:14px; font-size:16px; font-weight:600; font-family:inherit; cursor:pointer; margin-top:22px; transition:transform .1s,filter .2s; }
+  .btn:active { transform:scale(.98); } .btn:disabled { opacity:.45; }
+  .btn-primary { background:var(--green); color:#fff; }
+  .btn-stop { background:#fff; color:var(--green-dk); border:1.5px solid var(--green); }
+  .live { text-align:center; padding:8px 0; }
+  .live .ring { width:160px; height:160px; margin:8px auto 18px; position:relative; }
+  .live .ring svg { transform:rotate(-90deg); }
+  .live .center { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .live .kwh { font-family:'Fraunces',serif; font-size:36px; font-weight:600; }
+  .live .kwh-unit { font-size:13px; color:var(--muted); }
+  .live .amount { font-family:'Fraunces',serif; font-size:28px; font-weight:600; color:var(--green-dk); }
+  /* Fließender Fortschrittsbalken (evcc-Stil), passt zur Palette */
+  .flowbar { height:14px; border-radius:7px; background:var(--green-li); overflow:hidden; position:relative; margin:20px 0 4px; }
+  .flowbar .fill { height:100%; width:0%; background:var(--green); border-radius:7px; transition:width .8s ease; position:relative; }
+  .flowbar .fill::after { content:""; position:absolute; inset:0; border-radius:inherit;
+    background:repeating-linear-gradient(-55deg, rgba(255,255,255,.35) 0 10px, transparent 10px 20px);
+    background-size:28px 100%; animation:flow 1.1s linear infinite; }
+  .flowbar.full .fill::after { /* Modus "Voll laden": kein Ziel → Schimmer statt Füllung */
+    background:linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent); width:45%;
+    animation:sweep 1.8s ease-in-out infinite; }
+  .flowbar.full .fill { width:100% !important; background:var(--green-li); }
+  .flowbar-cap { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-bottom:2px; }
+  @keyframes flow { to { background-position:28px 0; } }
+  @keyframes sweep { 0%{transform:translateX(-110%);} 100%{transform:translateX(330%);} }
+  @media (prefers-reduced-motion:reduce){ .flowbar .fill::after{ animation:none; } }
+  .live-rows { margin-top:18px; }
+  .live-row { display:flex; justify-content:space-between; padding:12px 0; border-bottom:1px solid var(--border); font-size:14px; }
+  .live-row:last-child { border:none; } .live-row .k { color:var(--muted); } .live-row .v { font-weight:600; }
+  .pulse-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); margin-right:7px; animation:pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+  .receipt { text-align:center; }
+  .receipt .check { width:64px; height:64px; border-radius:50%; background:var(--green-li); color:var(--green); display:grid; place-items:center; font-size:32px; margin:0 auto 16px; }
+  .receipt .total { font-family:'Fraunces',serif; font-size:42px; font-weight:600; color:var(--green-dk); margin:10px 0 4px; }
+  .receipt .total-sub { color:var(--muted); font-size:14px; margin-bottom:22px; }
+  .receipt-rows { text-align:left; background:#fafaf7; border-radius:14px; padding:18px; }
+  .hint { display:flex; gap:12px; align-items:flex-start; background:#fdf6e9; border:1px solid #f0e2c4; border-radius:13px; padding:14px 16px; margin-top:18px; font-size:13px; color:#8a6a1f; line-height:1.45; }
+  .reserve-info { background:#eef7f0; border:1px solid #cfe7d6; border-radius:13px; padding:14px 16px; margin-top:12px; }
+  .reserve-info .ri-title { display:flex; align-items:center; gap:8px; font-size:14px; color:#2f7d4f; margin-bottom:6px; }
+  .reserve-info .ri-text { font-size:13px; color:#3a5c45; line-height:1.5; }
+  .footer { text-align:center; color:var(--muted); font-size:12px; margin-top:24px; }
+  .err { color:#c0392b; font-size:14px; margin-top:12px; text-align:center; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="brand"><div class="mark">⚡</div><h1>Steinbock Chalets</h1><p data-i18n="brandSub">E-Auto Ladestation</p></div>
+
+  <!-- STEP 1: Daten + Lademodus -->
+  <div class="card" id="step-welcome">
+    <div class="welcome-head">
+      <div class="step-label" data-i18n="welcomeLabel">Willkommen</div>
+      <div class="lang-toggle" id="langToggle">
+        <button data-lang="de">DE</button>
+        <button data-lang="en">EN</button>
+      </div>
+    </div>
+    <h2 data-i18n="welcomeTitle">Auto laden</h2>
+    <p class="sub" data-i18n="welcomeSub">Geben Sie Ihre Daten ein und wählen Sie, wie Sie laden möchten.</p>
+    <div class="wb-pill" id="wbPill"><span data-i18n="wbDefault">⚡ Ladestation</span></div>
+
+    <label for="gName" data-i18n="nameLabel">Name *</label>
+    <input id="gName" type="text" data-i18n-ph="namePh" placeholder="Ihr Name" name="g_name_field" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly>
+    <label for="gEmail" data-i18n="emailLabel">E-Mail (für die Quittung) *</label>
+    <input id="gEmail" type="email" data-i18n-ph="emailPh" placeholder="ihre@email.de" name="g_email_field" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly>
+
+    <label data-i18n="modeLabel">Lademodus</label>
+    <div class="mode-opts">
+      <div class="mode-opt active" data-mode="full" onclick="selMode('full')">
+        <div class="t" data-i18n="modeFullT">Voll laden</div>
+        <div class="d"><span data-i18n="modeFullD">Laden bis Sie selbst beenden. Reservierung:</span> <span id="reserveTxt">30 €</span></div>
+      </div>
+      <div class="mode-opt" data-mode="limit" onclick="selMode('limit')">
+        <div class="t" data-i18n="modeLimitT">Bis Betrag laden</div>
+        <div class="d" data-i18n="modeLimitD">Stoppt automatisch beim gewählten Betrag.</div>
+        <div class="limit-input hidden" id="limitWrap">
+          <input id="limitAmt" type="number" inputmode="decimal" data-i18n-ph="limitPh" placeholder="z.B. 20" min="1" step="0.5">
+        </div>
+      </div>
+    </div>
+
+    <div class="reserve-info" id="reserveInfo">
+      <div class="ri-title"><span>ℹ️</span> <strong id="riTitle" data-i18n="reserveInfoT">Wichtig zur Reservierung</strong></div>
+      <div class="ri-text" id="riText" data-i18n="reserveInfoD">Es wird nichts abgebucht – der Betrag wird nur vorgemerkt (wie eine Kaution). Nach dem Laden zahlen Sie ausschließlich den tatsächlich geladenen Strom. Der Rest der Reservierung wird automatisch wieder freigegeben.</div>
+    </div>
+    <button class="btn btn-primary" id="btnAuth" data-i18n="btnPay">Weiter zur Zahlung</button>
+    <div class="err hidden" id="err1"></div>
+  </div>
+
+  <!-- STEP 2: Laden läuft -->
+  <div class="card hidden" id="step-charging">
+    <div class="step-label"><span class="pulse-dot" id="chgDot"></span><span id="chgLabel" data-i18n="chargingLabel">Lädt</span></div>
+    <h2 id="chgTitle" data-i18n="chargingTitle">Ihr Auto lädt</h2>
+    <div id="chgHint" style="color:#9a7b3a;font-size:13px;margin:-4px 0 8px;"></div>
+    <div class="live">
+      <div class="ring">
+        <svg width="160" height="160"><circle cx="80" cy="80" r="70" fill="none" stroke="#e3ddd0" stroke-width="10"/>
+        <circle id="ring" cx="80" cy="80" r="70" fill="none" stroke="#2f7d4f" stroke-width="10" stroke-linecap="round" stroke-dasharray="440" stroke-dashoffset="440"/></svg>
+        <div class="center"><div class="kwh" id="liveKwh">0,00</div><div class="kwh-unit">kWh</div></div>
+      </div>
+      <div class="amount" id="liveAmount">0,00 €</div>
+    </div>
+    <div class="flowbar-cap"><span id="flowStart">0 kWh</span><span id="flowGoal"></span></div>
+    <div class="flowbar" id="flowbar"><div class="fill" id="flowFill"></div></div>
+    <div class="live-rows">
+      <div class="live-row"><span class="k" data-i18n="rowPower">Leistung</span><span class="v" id="livePower">0,0 kW</span></div>
+      <div class="live-row"><span class="k" data-i18n="rowDuration">Ladedauer</span><span class="v" id="liveDur">0 min</span></div>
+      <div class="live-row" id="limitRow"><span class="k" data-i18n="rowLimit">Limit</span><span class="v" id="liveLimit">—</span></div>
+    </div>
+    <button class="btn btn-stop" id="btnStop" data-i18n="btnStop">Laden beenden</button>
+  </div>
+
+  <!-- STEP 2b: Warte auf Auto (Countdown + Abbrechen) -->
+  <div class="card hidden" id="step-wait">
+    <div class="step-label"><span class="pulse-dot" style="background:#e0a82e"></span> <span data-i18n="waitTitle">Warte auf Fahrzeug</span></div>
+    <h2 data-i18n="waitTitle" style="margin-bottom:10px;">Warte auf Fahrzeug</h2>
+    <div class="live">
+      <div class="ring">
+        <svg width="160" height="160"><circle cx="80" cy="80" r="70" fill="none" stroke="#f0e2c4" stroke-width="10"/>
+        <circle id="waitArc" cx="80" cy="80" r="70" fill="none" stroke="#e0a82e" stroke-width="10" stroke-linecap="round" stroke-dasharray="440" stroke-dashoffset="0"/></svg>
+        <div class="center"><div class="kwh" id="waitCd" style="font-size:34px;">10:00</div><div class="kwh-unit" data-i18n="waitRemaining">verbleibend</div></div>
+      </div>
+    </div>
+    <div class="hint" style="background:#fdf6e9;border-color:#f0e2c4;color:#8a6a1f;"><span>⏱️</span><span data-i18n="waitCountdownHint">Bitte stecken Sie jetzt das Ladekabel an.</span></div>
+    <button class="btn btn-stop" id="btnWaitCancel" data-i18n="waitCancelBtn" style="color:#b13a2b;border-color:#e0b4ad;">Vorgang abbrechen</button>
+  </div>
+
+  <!-- STEP 3: Quittung -->
+  <div class="card hidden" id="step-receipt">
+    <div class="receipt">
+      <div class="check">✓</div>
+      <div class="step-label" data-i18n="receiptLabel">Bezahlt — danke!</div>
+      <div class="total" id="recTotal">0,00 €</div>
+      <div class="total-sub" id="recKwh">0 kWh</div>
+      <div class="receipt-rows">
+        <div class="live-row"><span class="k" data-i18n="recEnergyLabel">Geladene Energie</span><span class="v" id="recEnergy">—</span></div>
+        <div class="live-row"><span class="k" data-i18n="recPriceLabel">Preis pro kWh</span><span class="v" id="recPrice">—</span></div>
+        <div class="live-row"><span class="k" data-i18n="recChargedLabel">Betrag abgebucht</span><span class="v" id="recCharged">—</span></div>
+      </div>
+      <div class="footer" data-i18n="receiptFooter">Eine Quittung wurde an Ihre E-Mail gesendet.</div>
+    </div>
+  </div>
+
+  <div class="footer" data-i18n="pageFooter">Steinbock Chalets · Neukirchen am Großvenediger</div>
+
+  <!-- Dezentes Schloss (nur für den Betreiber) -->
+  <div style="text-align:center;margin-top:18px;">
+    <span id="lockIcon" onclick="toggleLock()" title="Betreiber-Login"
+          style="cursor:pointer;opacity:0.35;font-size:18px;user-select:none;">🔒</span>
+  </div>
+  <div id="lockPanel" class="hidden" style="max-width:360px;margin:10px auto 0;background:rgba(0,0,0,0.15);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;">
+    <div id="lockLogin">
+      <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Betreiber-Passwort</label>
+      <div style="display:flex;gap:8px;">
+        <input id="lockPw" type="password" placeholder="Passwort"
+               style="flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(0,0,0,0.2);color:inherit;">
+        <button class="btn btn-primary" style="width:auto;padding:10px 16px;" onclick="lockLogin()">Anmelden</button>
+      </div>
+      <div id="lockErr" class="err hidden" style="margin-top:8px;"></div>
+    </div>
+    <div id="lockAdmin" class="hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <span style="font-size:14px;font-weight:600;" id="lockBoxName">Diese Box</span>
+        <button class="link-btn" style="background:none;border:0;color:var(--muted);cursor:pointer;font-size:12px;" onclick="lockLogout()">Abmelden</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);">
+        <span style="font-size:13px;">Bezahlung erforderlich</span>
+        <label style="position:relative;display:inline-block;width:46px;height:26px;">
+          <input id="payToggle" type="checkbox" checked onchange="lockSetPay(this.checked)" style="opacity:0;width:0;height:0;">
+          <span id="paySlider" style="position:absolute;cursor:pointer;inset:0;background:var(--green);border-radius:26px;transition:.2s;">
+            <span id="payKnob" style="position:absolute;height:20px;width:20px;left:23px;bottom:3px;background:#fff;border-radius:50%;transition:.2s;"></span>
+          </span>
+        </label>
+      </div>
+      <div id="payWarn" class="hidden" style="color:var(--amber,#e0a800);font-size:12px;font-weight:600;margin-top:8px;">
+        ⚠️ Bezahlung AUS — an dieser Box wird gratis geladen. Setzt sich nach dem nächsten Ladevorgang automatisch zurück.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===== ÜBERSETZUNGEN (DE / EN) ===== */
+const I18N = {
+  de: {
+    pageTitle:"Laden — Steinbock Chalets",
+    brandSub:"E-Auto Ladestation",
+    welcomeLabel:"Willkommen",
+    welcomeTitle:"Auto laden",
+    welcomeSub:"Geben Sie Ihre Daten ein und wählen Sie, wie Sie laden möchten.",
+    wbDefault:"⚡ Ladestation",
+    nameLabel:"Name *",
+    namePh:"Ihr Name",
+    emailLabel:"E-Mail (für die Quittung) *",
+    emailPh:"ihre@email.de",
+    modeLabel:"Lademodus",
+    modeFullT:"Voll laden",
+    modeFullD:"Laden bis Sie selbst beenden. Reservierung:",
+    modeLimitT:"Bis Betrag laden",
+    modeLimitD:"Stoppt automatisch beim gewählten Betrag.",
+    limitPh:"z.B. 20",
+    hintPlug:"Bitte stecken Sie das Ladekabel an Ihr Fahrzeug. Nach der Zahlungsfreigabe startet die Ladung automatisch.",
+    reserveInfoT:"Wichtig zur Reservierung",
+    reserveInfoLimitT:"Laden bis zum Betrag",
+    reserveInfoD:"Es wird nichts abgebucht – der Betrag wird nur vorgemerkt (wie eine Kaution). Nach dem Laden zahlen Sie ausschließlich den tatsächlich geladenen Strom. Der Rest der Reservierung wird automatisch wieder freigegeben.",
+    reserveInfoLimitD:"Es wird bis zu dem von Ihnen eingegebenen Betrag geladen. Danach stoppt die Ladung automatisch.",
+    btnPay:"Weiter zur Zahlung",
+    chargingLabel:"Lädt",
+    chargingTitle:"Ihr Auto lädt",
+    waitLabel:"Bereit",
+    waitTitle:"Warte auf Fahrzeug",
+    waitCountdownHint:"Bitte stecken Sie jetzt das Ladekabel an. Wird innerhalb der angezeigten Zeit kein Fahrzeug angesteckt, brechen wir automatisch ab und Ihre Reservierung wird freigegeben.",
+    waitRemaining:"verbleibend",
+    waitCancelBtn:"Vorgang abbrechen",
+    waitCancelTitle:"Wirklich abbrechen?",
+    waitCancelText:"Der Vorgang wird beendet und Ihre Reservierung vollständig freigegeben. Es wird nichts berechnet.",
+    waitCancelStay:"Weiter warten",
+    waitCancelGo:"Ja, abbrechen",
+    waitHint:"Bitte Ladekabel anstecken — die Ladung startet automatisch.",
+    pausedLabel:"Pausiert",
+    pausedTitle:"Ladung pausiert",
+    pausedHint:"Fahrzeug angeschlossen — wartet (z.B. zu wenig Solar-Überschuss).",
+    rowPower:"Leistung",
+    rowDuration:"Ladedauer",
+    rowLimit:"Limit",
+    btnStop:"Laden beenden",
+    receiptLabel:"Bezahlt — danke!",
+    recEnergyLabel:"Geladene Energie",
+    recPriceLabel:"Preis pro kWh",
+    recChargedLabel:"Betrag abgebucht",
+    receiptFooter:"Eine Quittung wurde an Ihre E-Mail gesendet.",
+    pageFooter:"Steinbock Chalets · Neukirchen am Großvenediger",
+    // dynamische Texte
+    minUnit:"min",
+    kwhLoaded:(v)=>`${v} kWh geladen`,
+    errName:"Bitte geben Sie Ihren Namen ein.",
+    errEmail:"Bitte geben Sie eine gültige E-Mail-Adresse ein.",
+    busyTitle:"Station belegt",
+    busyText:"Diese Ladestation wird gerade benutzt. Bitte nutzen Sie die zweite Station oder versuchen Sie es in einigen Minuten erneut.",
+    readyMsg:"Station ladebereit",
+    busyRecheck:"Erneut prüfen",
+    plugReady:"Ihr Fahrzeug ist bereits verbunden — die Ladung startet automatisch.",
+    noPowerHint:"Es fließt noch kein Strom. Bitte prüfen Sie, ob das Kabel fest in Fahrzeug und Station steckt. Hilft das nicht, ziehen Sie es einmal kurz ab und stecken es wieder ein.",
+    errLimit:"Bitte gültigen Betrag eingeben.",
+    errPayNotConfirmed:"Zahlung nicht bestätigt: ",
+    errPayCancelled:"Zahlung abgebrochen.",
+    errGeneric:"Fehler: "
+  },
+  en: {
+    pageTitle:"Charging — Steinbock Chalets",
+    brandSub:"EV Charging Station",
+    welcomeLabel:"Welcome",
+    welcomeTitle:"Charge your car",
+    welcomeSub:"Enter your details and choose how you would like to charge.",
+    wbDefault:"⚡ Charging station",
+    nameLabel:"Name *",
+    namePh:"Your name",
+    emailLabel:"Email (for the receipt) *",
+    emailPh:"you@email.com",
+    modeLabel:"Charging mode",
+    modeFullT:"Full charge",
+    modeFullD:"Charge until you stop yourself. Pre-authorisation:",
+    modeLimitT:"Charge up to an amount",
+    modeLimitD:"Stops automatically when the chosen amount is reached.",
+    limitPh:"e.g. 20",
+    hintPlug:"Please plug the charging cable into your vehicle. Charging starts automatically once payment is authorised.",
+    reserveInfoT:"About the pre-authorisation",
+    reserveInfoLimitT:"Charging up to your amount",
+    reserveInfoD:"Nothing is charged yet – the amount is only held (like a deposit). After charging you pay only for the electricity actually used. The rest of the hold is released automatically.",
+    reserveInfoLimitD:"Charging continues up to the amount you entered. After that it stops automatically.",
+    btnPay:"Continue to payment",
+    chargingLabel:"Charging",
+    chargingTitle:"Your car is charging",
+    waitLabel:"Ready",
+    waitTitle:"Waiting for vehicle",
+    waitCountdownHint:"Please plug in the charging cable now. If no vehicle is connected within the time shown, we cancel automatically and your pre-authorisation is released.",
+    waitRemaining:"remaining",
+    waitCancelBtn:"Cancel charging",
+    waitCancelTitle:"Really cancel?",
+    waitCancelText:"The process will end and your pre-authorisation will be fully released. Nothing will be charged.",
+    waitCancelStay:"Keep waiting",
+    waitCancelGo:"Yes, cancel",
+    waitHint:"Please plug in the cable — charging starts automatically.",
+    pausedLabel:"Paused",
+    pausedTitle:"Charging paused",
+    pausedHint:"Vehicle connected — waiting (e.g. not enough solar surplus).",
+    rowPower:"Power",
+    rowDuration:"Duration",
+    rowLimit:"Limit",
+    btnStop:"Stop charging",
+    receiptLabel:"Paid — thank you!",
+    recEnergyLabel:"Energy charged",
+    recPriceLabel:"Price per kWh",
+    recChargedLabel:"Amount charged",
+    receiptFooter:"A receipt has been sent to your email.",
+    pageFooter:"Steinbock Chalets · Neukirchen am Großvenediger",
+    // dynamische Texte
+    minUnit:"min",
+    kwhLoaded:(v)=>`${v} kWh charged`,
+    errName:"Please enter your name.",
+    errEmail:"Please enter a valid email address.",
+    busyTitle:"Station in use",
+    busyText:"This charging station is currently in use. Please use the second station or try again in a few minutes.",
+    readyMsg:"Station ready to charge",
+    busyRecheck:"Check again",
+    plugReady:"Your vehicle is already connected — charging starts automatically.",
+    noPowerHint:"No power is flowing yet. Please check that the cable is firmly plugged into both the vehicle and the station. If that doesn't help, unplug it briefly and plug it back in.",
+    errLimit:"Please enter a valid amount.",
+    errPayNotConfirmed:"Payment not confirmed: ",
+    errPayCancelled:"Payment cancelled.",
+    errGeneric:"Error: "
+  }
+};
+
+const LANG_KEY = 'wallbox-guest-lang';
+let LANG = 'de';
+const t = key => (I18N[LANG] && I18N[LANG][key]) || (I18N.de[key]) || key;
+
+function applyLang(lang){
+  LANG = (lang === 'en') ? 'en' : 'de';
+  document.documentElement.setAttribute('lang', LANG);
+  document.title = t('pageTitle');
+  // Texte mit data-i18n
+  document.querySelectorAll('[data-i18n]').forEach(el=>{
+    const key = el.getAttribute('data-i18n');
+    const val = I18N[LANG][key];
+    if(typeof val === 'string') el.textContent = val;
+  });
+  // Platzhalter mit data-i18n-ph
+  document.querySelectorAll('[data-i18n-ph]').forEach(el=>{
+    const key = el.getAttribute('data-i18n-ph');
+    const val = I18N[LANG][key];
+    if(typeof val === 'string') el.setAttribute('placeholder', val);
+  });
+  // aktiven Knopf markieren
+  document.querySelectorAll('#langToggle button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.lang === LANG);
+  });
+  // dynamische Felder, die evtl. schon Inhalt haben, neu setzen
+  if(lastSession){ refreshDynamicTexts(); }
+  if(currentReceipt){ fillReceiptTexts(currentReceipt.energy, currentReceipt.shown); }
+  // Status-Pill / ready- bzw. busy-Box in neuer Sprache neu zeichnen
+  if(lastWb){ checkBusy(lastWb); }
+}
+
+function setLang(lang){ localStorage.setItem(LANG_KEY, lang); applyLang(lang); }
+
+function initLang(){
+  let saved = localStorage.getItem(LANG_KEY);
+  if(!saved){
+    const nav = (navigator.language||'de').toLowerCase();
+    saved = nav.startsWith('en') ? 'en' : 'de';   // unbekannt -> Deutsch
+  }
+  applyLang(saved);
+  document.querySelectorAll('#langToggle button').forEach(b=>{
+    b.addEventListener('click', ()=> setLang(b.dataset.lang));
+  });
+}
+
+/* ===== APP-LOGIK ===== */
+const params = new URLSearchParams(location.search);
+const WB = params.get('wb') || 'p30c';   // FIX: String-ID (p30c/p30x), nicht mehr Number()
+let PRICE=0.35, CUR="EUR", RESERVE=30, mode='full';
+let sessionId=null, startTime=null, pollTimer=null, lastSession=null, currentReceipt=null, lastWb=null;
+const $ = id => document.getElementById(id);
+const eur = n => n.toFixed(2).replace('.',',')+' €';
+
+// Basis-URL: leer = gleiche Domain wie diese Seite (relativer Pfad /api/...).
+const API = '';
+// Zentrale Backend-Hilfe. Schickt den Betreiber-Token nur mit, wenn vorhanden
+// (Gäste brauchen keinen; der versteckte Bezahl-Schalter nutzt ihn).
+async function api(path, method='GET', body=null){
+  const opt = { method, headers: { 'Content-Type':'application/json' } };
+  if(typeof LOCK_TOKEN !== 'undefined' && LOCK_TOKEN){ opt.headers['X-Auth-Token'] = LOCK_TOKEN; }
+  if(body) opt.body = JSON.stringify(body);
+  const r = await fetch(API + path, opt);
+  if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.error || r.statusText); }
+  return r.json();
+}
+
+// ===== Dezentes Schloss: Betreiber-Login + Bezahl-Schalter dieser Box =====
+let LOCK_TOKEN = null;
+function $id(x){ return document.getElementById(x); }
+function toggleLock(){
+  const p = $id('lockPanel');
+  p.classList.toggle('hidden');
+}
+async function lockLogin(){
+  const pw = $id('lockPw').value;
+  const err = $id('lockErr');
+  err.classList.add('hidden');
+  if(!pw){ err.textContent='Bitte Passwort eingeben.'; err.classList.remove('hidden'); return; }
+  try{
+    const r = await api('/api/login','POST',{password:pw});
+    LOCK_TOKEN = r.token;
+    $id('lockPw').value='';
+    $id('lockLogin').classList.add('hidden');
+    $id('lockAdmin').classList.remove('hidden');
+    $id('lockIcon').textContent='🔓';
+    $id('lockBoxName').textContent = (WB==='p30x'?'P30X':'P30C');
+    await lockRefreshPay();
+  }catch(e){
+    err.textContent='Anmeldung fehlgeschlagen.'; err.classList.remove('hidden');
+  }
+}
+function lockLogout(){
+  LOCK_TOKEN=null;
+  $id('lockAdmin').classList.add('hidden');
+  $id('lockLogin').classList.remove('hidden');
+  $id('lockIcon').textContent='🔒';
+}
+async function lockRefreshPay(){
+  try{
+    const d = await api('/api/state');
+    const wb = d.wallboxen.find(w=>w.id===WB);
+    const required = wb ? wb.pay_required!==false : true;
+    setPayUI(required);
+  }catch(e){}
+}
+function setPayUI(required){
+  $id('payToggle').checked = required;
+  $id('paySlider').style.background = required ? 'var(--green)' : 'rgba(255,255,255,0.25)';
+  $id('payKnob').style.left = required ? '23px' : '3px';
+  $id('payWarn').classList.toggle('hidden', required);
+}
+async function lockSetPay(required){
+  try{
+    await api('/api/wallbox/'+WB+'/payment','POST',{required:required});
+    setPayUI(required);
+  }catch(e){
+    alert('Schalten fehlgeschlagen: '+e.message);
+    lockRefreshPay();
+  }
+}
+
+
+function selMode(m){
+  mode=m;
+  document.querySelectorAll('.mode-opt').forEach(el=>el.classList.toggle('active', el.dataset.mode===m));
+  $('limitWrap').classList.toggle('hidden', m!=='limit');
+  // Reservierungs-Erklärung an den Modus anpassen (Text + i18n-Key umsetzen,
+  // damit auch ein späterer Sprachwechsel den richtigen Text nimmt).
+  const ri=$('riText');
+  if(ri){
+    const key = (m==='limit') ? 'reserveInfoLimitD' : 'reserveInfoD';
+    ri.setAttribute('data-i18n', key);
+    ri.textContent = t(key);
+  }
+  const rit=$('riTitle');
+  if(rit){
+    const tkey = (m==='limit') ? 'reserveInfoLimitT' : 'reserveInfoT';
+    rit.setAttribute('data-i18n', tkey);
+    rit.textContent = t(tkey);
+  }
+}
+
+async function loadInfo(){
+  try { const d=await api('/api/state'); PRICE=d.pricePerKwh; CUR=d.currency; RESERVE=d.reserveAmount||30;
+    $('reserveTxt').textContent=RESERVE+' €';
+    const wb=d.wallboxen.find(w=>w.id===WB);
+    lastWb = wb;
+    checkBusy(wb);
+  } catch(e){}
+}
+
+// Verbesserung: Belegt-Prüfung. Lädt bereits ein (fremdes) Fahrzeug an dieser
+// Box, ohne dass wir gerade selbst in einer Session sind, sperren wir den
+// Zahl-Button und zeigen eine ehrliche Meldung statt eines Stripe-Fehlers.
+function checkBusy(wb){
+  if(!wb) return;
+  const fliesst = (wb.power||0) > 50 || wb.state==='charging';
+  const belegt  = (wb.carConnected || fliesst);
+  const btn=$('btnAuth');
+  if(belegt){
+    // belegt -> Status NUR in der Pille (rot), kein großer Kasten
+    const rb=$('readyBox'); if(rb) rb.remove();
+    const bb=$('busyBox'); if(bb) bb.remove();
+    const nm = (wb && wb.name) ? wb.name : t('wbDefault');
+    $('wbPill').innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#d6453a;"></span> '+nm+' · '+t('busyTitle');
+    $('wbPill').style.cssText='background:#fbecea;color:#b13a2b;';
+    btn.disabled=false;
+    btn.textContent=t('busyRecheck');
+    // "Erneut prüfen" soll NUR den Status neu laden. loadInfo() ruft checkBusy
+    // erneut auf und stellt den Button danach korrekt ein (frei -> bezahlen,
+    // belegt -> wieder erneut prüfen). KEIN attachPayHandler hier, sonst wird
+    // der Button widersprüchlich auf "bezahlen" gesetzt obwohl evtl. noch belegt.
+    btn.onclick=()=>{ loadInfo(); };
+  } else {
+    // Box ist frei -> positive Bestätigung NUR in der Pille (kein extra Kasten)
+    const b=$('busyBox'); if(b) b.remove();
+    const rb=$('readyBox'); if(rb) rb.remove();
+    btn.disabled=false;
+    btn.textContent=t('btnPay');
+    attachPayHandler();   // sicherstellen, dass der Zahl-Handler (wieder) dranhängt
+    const nm = (wb && wb.name) ? wb.name : t('wbDefault');
+    $('wbPill').innerHTML = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2f7d4f;"></span> '+nm+' · '+t('readyMsg');
+    $('wbPill').style.cssText='';
+  }
+}
+
+// STEP 1 -> Stripe  (als benannte Funktion, damit die Belegt-Prüfung
+// den Handler nach 'Erneut prüfen' wiederherstellen kann)
+function attachPayHandler(){
+ $('btnAuth').onclick = async () => {
+  $('err1').classList.add('hidden');
+  const name = $('gName').value.trim();
+  const email = $('gEmail').value.trim();
+
+  if(name.length < 2){ showErr(t('errName')); return; }
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  if(!emailOk){ showErr(t('errEmail')); return; }
+
+  $('btnAuth').disabled=true;
+  // Kurz-Check unmittelbar vor Stripe: wurde die Box inzwischen belegt?
+  try {
+    const dd=await api('/api/state');
+    const w=dd.wallboxen.find(x=>x.id===WB);
+    const fliesst=(w && ((w.power||0)>50 || w.state==='charging'));
+    if(w && (w.carConnected || fliesst)){
+      $('btnAuth').disabled=false; lastWb=w; checkBusy(w);
+      showErr(t('busyText')); return;
+    }
+  } catch(e){}
+  const body={ guestName:name, guestEmail:email, mode };
+  if(mode==='limit'){ const v=Number(String($('limitAmt').value).replace(',','.')); if(!v||v<1){ showErr(t('errLimit')); $('btnAuth').disabled=false; return; } body.limitAmount=v; }
+  try {
+    const r=await api(`/api/guest/request?wb=${WB}`,'POST',body);
+    sessionStorage.setItem('sid', r.sessionId);
+    location.href = r.checkoutUrl;
+  } catch(e){ showErr(e.message); $('btnAuth').disabled=false; }
+ };
+}
+attachPayHandler();
+function showErr(m){ $('err1').textContent=m; $('err1').classList.remove('hidden'); }
+
+// Rückkehr von Stripe
+async function handleReturn(){
+  const paid=params.get('paid'); const sid=params.get('sid')||sessionStorage.getItem('sid');
+  if(paid==='ok' && sid){
+    try {
+      const r=await api(`/api/guest/confirm/${sid}`,'POST');
+      sessionId=sid; startTime=Date.now();   // FIX: String-ID behalten, nicht Number() (IDs sind 's_...')
+      const s=r.session;
+      // Limit-Feld tolerant lesen (Backend liefert evtl. limit_amount ODER limitAmount)
+      const lim = (s.limit_amount!=null)?s.limit_amount:(s.limitAmount!=null?s.limitAmount:null);
+      if(s.mode==='limit' && lim!=null){ $('liveLimit').textContent=eur(lim); } else { $('limitRow').classList.add('hidden'); }
+      showStep('charging'); startPolling();
+    } catch(e){ showStep('welcome'); showErr(t('errPayNotConfirmed')+e.message); }
+  } else if(paid==='cancel'){
+    showStep('welcome'); showErr(t('errPayCancelled'));
+  } else {
+    showStep('welcome');
+  }
+}
+
+function showStep(n){ ['welcome','charging','wait','receipt'].forEach(s=>$('step-'+s).classList.toggle('hidden',s!==n)); window.scrollTo(0,0); }
+
+function startPolling(){ poll(); pollTimer=setInterval(poll,3000); }
+
+function refreshDynamicTexts(){
+  if(!lastSession) return;
+  const s=lastSession;
+  $('liveDur').textContent=Math.floor((Date.now()-startTime)/60000)+' '+t('minUnit');
+}
+
+async function poll(){
+  try {
+    const d=await api('/api/state'); const wb=d.wallboxen.find(w=>w.id===WB);
+    if(!wb||!wb.session){
+      if(sessionId){ const sess=await api('/api/sessions?limit=5'); const me=sess.sessions.find(x=>x.id===sessionId);
+        if(me && me.status==='completed'){ clearInterval(pollTimer); showReceipt(me); } }
+      return;
+    }
+    const s=wb.session;
+
+    // --- WARTE AUF AUTO: Countdown + Abbrechen statt Lade-Anzeige ---
+    if(wb.waitingForCar){
+      showWaitScreen(s);
+      return;
+    }
+    hideWaitScreen();
+
+    $('liveKwh').textContent=s.energyKwh.toFixed(2).replace('.',',');
+    $('liveAmount').textContent=eur(s.amount);
+    $('livePower').textContent=(wb.power/1000).toFixed(1).replace('.',',')+' kW';
+    $('liveDur').textContent=Math.floor((Date.now()-startTime)/60000)+' '+t('minUnit');
+
+    // Ehrlicher Status: läuft die Session zwar, aber es fließt kein Strom,
+    // dann NICHT "lädt" anzeigen. Tatsächlicher Stromfluss = power oder Phasen-Strom.
+    const cur = wb.currents || [0,0,0];
+    const ampMax = Math.max(cur[0]||0, cur[1]||0, cur[2]||0);
+    const fliesst = (wb.power||0) > 50 || ampMax > 0.2 || wb.state==='charging';
+    const lblEl=$('chgLabel'), titEl=$('chgTitle'), hintEl=$('chgHint'), dotEl=$('chgDot');
+    if(fliesst){
+      lblEl.textContent=t('chargingLabel'); titEl.textContent=t('chargingTitle');
+      hintEl.textContent=''; if(dotEl) dotEl.style.background='';
+    } else if(wb.carConnected){
+      // Verbunden, aber kein Strom. Bei bezahlpflichtiger Gast-Box soll sofort
+      // Strom fließen -> deutlicher Hinweis (Kabel prüfen / kurz neu stecken).
+      // Bei pay_required=false ist das Überschussladen (Tesla wartet auf Sonne)
+      // -> sanfter pausedHint, NICHT als Fehler darstellen.
+      const payReq = (wb.pay_required!==false);
+      lblEl.textContent=t('pausedLabel'); titEl.textContent=t('pausedTitle');
+      hintEl.textContent = payReq ? t('noPowerHint') : t('pausedHint');
+      if(dotEl) dotEl.style.background='#e0a82e';
+    } else {
+      lblEl.textContent=t('waitLabel'); titEl.textContent=t('waitTitle');
+      hintEl.textContent=t('waitHint'); if(dotEl) dotEl.style.background='#e0a82e';
+    }
+    const limAmt = (s.limitAmount!=null)?s.limitAmount:(s.limit_amount!=null?s.limit_amount:null);
+    const denom = (s.mode==='limit' && limAmt) ? (limAmt/PRICE) : 50;
+    $('ring').style.strokeDashoffset = 440*(1-Math.min(1,s.energyKwh/denom));
+    // Fließender Balken: bei "limit" echter Fortschritt, bei "voll" Schimmer
+    const fb=$('flowbar'), fill=$('flowFill');
+    if(s.mode==='limit' && limAmt){
+      fb.classList.remove('full');
+      fill.style.width = (Math.min(1, s.energyKwh/denom)*100).toFixed(1)+'%';
+      $('flowGoal').textContent = denom.toFixed(1).replace('.',',')+' kWh';
+    } else {
+      fb.classList.add('full');           // kein Ziel → Schimmer
+      $('flowGoal').textContent = '';
+    }
+    $('flowStart').textContent = s.energyKwh.toFixed(2).replace('.',',')+' kWh';
+    lastSession=s;
+  } catch(e){}
+}
+
+$('btnStop').onclick = async () => {
+  $('btnStop').disabled=true; clearInterval(pollTimer);
+  try { const r=await api(`/api/guest/stop/${sessionId}`,'POST'); showReceipt(r.session, r.captured); }
+  catch(e){ alert(t('errGeneric')+e.message); $('btnStop').disabled=false; }
+};
+$('btnWaitCancel').onclick = waitCancel;
+
+function fillReceiptTexts(energy, shown){
+  $('recTotal').textContent=eur(shown);
+  $('recKwh').textContent=t('kwhLoaded')(energy.toFixed(2).replace('.',','));
+  $('recEnergy').textContent=energy.toFixed(2).replace('.',',')+' kWh';
+  $('recPrice').textContent=PRICE.toFixed(2).replace('.',',')+' €/kWh';
+  $('recCharged').textContent=eur(shown);
+}
+
+// --- Warte-auf-Auto-Screen mit Countdown ---
+const WAIT_TOTAL = 10*60;   // 10 Minuten (Anzeige; echter Timeout im Backend)
+let waitTimer=null, waitLeft=WAIT_TOTAL, waitActive=false;
+function showWaitScreen(s){
+  if(!waitActive){
+    waitActive=true;
+    waitLeft=WAIT_TOTAL;
+    showStep('wait');
+    if(waitTimer) clearInterval(waitTimer);
+    waitTimer=setInterval(waitTick,1000);
+    waitTick();
+  }
+}
+function hideWaitScreen(){
+  if(waitActive){
+    waitActive=false;
+    if(waitTimer){ clearInterval(waitTimer); waitTimer=null; }
+    showStep('charging');
+  }
+}
+function waitFmt(sec){ const m=Math.floor(sec/60), ss=sec%60; return m+':'+String(ss).padStart(2,'0'); }
+function waitTick(){
+  if(waitLeft<0){ return; }
+  $('waitCd').textContent=waitFmt(waitLeft);
+  const frac=Math.max(0,waitLeft/WAIT_TOTAL);
+  $('waitArc').setAttribute('stroke-dashoffset', String(440*(1-frac)));
+  waitLeft--;
+}
+async function waitCancel(){
+  if(!confirm(t('waitCancelText'))) return;
+  try {
+    await api(`/api/guest/cancel/${sessionId}`,'POST');
+  } catch(e){}
+  if(waitTimer){ clearInterval(waitTimer); waitTimer=null; }
+  waitActive=false;
+  clearInterval(pollTimer);
+  showStep('welcome');
+}
+
+function showReceipt(s, captured){
+  const energy=s.energy_kwh||0, amount=s.amount||0;
+  const shown=(captured!=null?captured:amount);
+  currentReceipt={ energy, shown };
+  fillReceiptTexts(energy, shown);
+  showStep('receipt');
+}
+
+// Autofill-Schutz: Felder starten readonly, damit der Browser sie beim Laden
+// nicht automatisch befüllt. Beim ersten Antippen/Fokus wird readonly entfernt.
+['gName','gEmail'].forEach(id=>{
+  const el=$(id); if(!el) return;
+  const unlock=()=>{ el.removeAttribute('readonly'); };
+  el.addEventListener('focus', unlock);
+  el.addEventListener('pointerdown', unlock);
+  el.addEventListener('touchstart', unlock);
+});
+
+initLang();
+// Welcome-Seite: Box-Status automatisch aktualisieren (alle 5s), damit
+// "belegt -> frei" ohne Neuladen erscheint. Läuft nur, solange die Welcome-
+// Seite sichtbar ist (nicht während Laden/Warten/Quittung), und nie während
+// der Nutzer gerade in den Feldern tippt.
+let welcomePollTimer=null;
+function startWelcomePoll(){
+  if(welcomePollTimer) return;
+  welcomePollTimer=setInterval(()=>{
+    const wc=$('step-welcome');
+    if(!wc || wc.classList.contains('hidden')) return;   // nur auf Welcome
+    const a=document.activeElement;
+    if(a && (a.id==='gName' || a.id==='gEmail')) return;  // nicht beim Tippen stören
+    loadInfo();
+  }, 5000);
+}
+
+loadInfo(); handleReturn(); startWelcomePoll();
+</script>
+</body>
+</html>

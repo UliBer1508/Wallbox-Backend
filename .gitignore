@@ -1,16 +1,9 @@
-﻿.env
-.env.local
-services.json
+﻿node_modules/
+.env
 sessions.db
-sessions.db-shm
-sessions.db-wal
-*.db
-*.db-shm
-*.db-wal
-*.sqlite
-*.sqlite3
-node_modules/
-logs/
-alle datein 20.6.26.zip
-test-protokoll.txt
-test-protokoll-2.txt
+sessions.db-*
+*.log
+
+# PC-spezifische Dienste-Konfiguration (lokale Dienstnamen, Tailscale-IP etc.)
+# Vorlage im Repo: services.example.json
+services.json

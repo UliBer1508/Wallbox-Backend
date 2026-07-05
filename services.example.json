@@ -1,0 +1,10 @@
+﻿{
+  "_hinweis": "VORLAGE. Kopiere diese Datei nach 'services.json' und passe sie an DIESEN PC an. services.json selbst ist in .gitignore (PC-spezifisch).",
+  "services": [
+    { "name": "WallboxBackend", "label": "Wallbox-Backend", "url": "http://localhost:8080", "manageable": true },
+    { "name": "CloudflaredTunnel", "label": "Cloudflare-Tunnel (Gaeste)", "url": "https://wallbox.example.com", "manageable": true }
+  ],
+  "extraServices": [
+    { "name": "Tailscale", "label": "Tailscale (Fernzugriff)", "url": "https://login.tailscale.com/admin/machines" }
+  ]
+}

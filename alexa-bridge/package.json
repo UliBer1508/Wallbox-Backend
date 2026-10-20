@@ -1,0 +1,18 @@
+{
+  "name": "alexa-bridge-wallbox",
+  "version": "2.0.3",
+  "description": "Alexa-Sprachsteuerung für die Wallboxen (Steinbock Chalets) über Sinric Pro und das Wallbox-Backend",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "node index.js",
+    "test-backend": "node index.js --test",
+    "selftest": "node selftest.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "sinricpro": "^6.1.0"
+  }
+}

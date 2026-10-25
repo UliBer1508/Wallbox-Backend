@@ -56,8 +56,14 @@ class WallboxUnit {
     this.plugTs = null;          // Zeitpunkt, als das Auto eingesteckt wurde
     this.plugStartKwh = null;    // Gesamt-Zählerstand beim Einstecken
     this.waitingSince = null;    // Beginn WAITING_FOR_CAR (fuer 10-Min-Timeout)
+    this.stoppingSince = null;   // Beginn STOPPING (fuer Zwangs-Abschluss)
+    this.failsafeErrorReported = false; // Failsafe-Schreibfehler nur einmal melden
   }
 }
+
+// Laenger als das darf ein Stopp nicht "haengen": danach wird die Session
+// trotzdem abgeschlossen und die Box (bei Bezahlung AN) hart gesperrt.
+const STOP_FORCE_MS = 30 * 1000;
 
 export class WallboxManager extends EventEmitter {
   /**
@@ -103,11 +109,7 @@ export class WallboxManager extends EventEmitter {
       unit.reconnectAttempts = 0;
       this.emit('connectionRestored', { wallboxId: unit.id });
       // Failsafe der Box setzen (Box stoppt selbsttaetig bei Daemon-Stille)
-      if (unit.cfg.active && typeof unit.driver.writeFailsafe === 'function') {
-        const t = unit.cfg.failsafeTimeoutSec ?? 30;
-        const fbMa = (unit.cfg.failsafeFallbackA ?? 6) * 1000;
-        try { await unit.driver.writeFailsafe(t, fbMa); } catch { /* [PRUEFEN@PC] */ }
-      }
+      await this._applyFailsafe(unit);
       // DEFAULT-SPERRE beim Verbinden durchsetzen: aktive Box wird sofort
       // gesperrt, damit ohne bezahlte Session nicht geladen werden kann.
       if (unit.cfg.active && unit.payRequired && unit.locked && !unit.session) {
@@ -116,6 +118,55 @@ export class WallboxManager extends EventEmitter {
     } catch (e) {
       this.emit('connectionLost', { wallboxId: unit.id, error: e.message });
     }
+  }
+
+  // FAILSAFE (Keba-eigener Watchdog, Register 5016/5018 [PRUEFEN@PC]):
+  //  - Bezahlung AN:  Timeout aktiv, Fallback-Strom 0 A. Verstummt das Backend
+  //    (Absturz, PC aus, Neustart), stoppt die Box selbst -> niemand laedt gratis.
+  //    Frueher stand der Fallback auf 6 A: dann haette bei Backend-Ausfall jeder
+  //    mit 6 A laden koennen.
+  //  - Bezahlung AUS: Failsafe aus (Timeout 0) -> eigener Tesla laedt auch dann,
+  //    wenn das Backend gerade nicht laeuft.
+  // Die Keba erwartet bei aktivem Timeout regelmaessige Schreibzugriffe
+  // (Heartbeat). Deshalb wird das hier bei JEDEM Poll erneut geschrieben
+  // (Poll-Intervall <= 10 s, Timeout 30 s).
+  async _applyFailsafe(unit) {
+    if (!unit.cfg.active || typeof unit.driver.writeFailsafe !== 'function') return;
+    const t = unit.cfg.failsafeTimeoutSec ?? 30;
+    const fbMa = (unit.cfg.failsafeFallbackA ?? 0) * 1000;
+    try {
+      if (unit.payRequired && t > 0) await unit.driver.writeFailsafe(t, fbMa);
+      else await unit.driver.writeFailsafe(0, 0);   // Failsafe aus
+      unit.failsafeErrorReported = false;
+    } catch (e) {
+      if (!unit.failsafeErrorReported) {
+        unit.failsafeErrorReported = true;
+        this.emit('errorOccurred', { wallboxId: unit.id, code: 'FAILSAFE_FAILED', details: e.message });
+      }
+    }
+  }
+
+  // Nach Session-Ende: Bezahlung AN -> Box sofort wieder hart sperren.
+  // Bezahlung AUS -> keine Sperre. Mit release=true wird die Box wieder
+  // freigegeben (Abbruch/Timeout: nichts soll den Tesla blockieren). Nach
+  // einem bewussten Stopp bleibt sie aus, bis das Auto abgesteckt wird.
+  async _afterSession(unit, { release = false } = {}) {
+    if (!unit.cfg.active) return;
+    if (unit.payRequired) {
+      unit.locked = true;
+      await this._enforceLock(unit);
+      return;
+    }
+    unit.locked = false;
+    if (release) await this._releaseBox(unit);
+  }
+
+  // Box fuer freies Laden freigeben (nur Bezahlung AUS).
+  async _releaseBox(unit) {
+    try {
+      await unit.driver.writeEnable(true);
+      await unit.driver.writeCurrent((unit.cfg.maxCurrentA ?? 16) * 1000);
+    } catch { /* nur lesen, egal */ }
   }
 
   // Setzt die Default-Sperre durch: Box uebernehmen (writeEnable(true)),
@@ -147,7 +198,10 @@ export class WallboxManager extends EventEmitter {
       const laedt = snap && (snap.state === 'charging' || (snap.watt ?? 0) > 50);
       if (laedt) return Math.min(active, 2000);   // hoechstens 2 s
     }
-    return unit.sm.isCharging() ? active : idle;
+    // Waehrend STOPPING schnell pollen, damit ein nicht greifender Stopp
+    // sofort wiederholt wird.
+    if (unit.sm.isCharging() || unit.sm.state === STATES.STOPPING) return active;
+    return idle;
   }
 
   _scheduleNextPoll(unit) {
@@ -178,26 +232,14 @@ export class WallboxManager extends EventEmitter {
     const prev = unit.snapshot;
     unit.snapshot = snap;
 
-    // --- DEFAULT-SPERRE durchsetzen (Abrechnungsschutz) ----------------
-    // Box ist gesperrt (locked) und NICHT in einer laufenden Ladung
-    // (CHARGING), aber das Auto laedt trotzdem? -> erneut sperren. Das
-    // faengt ab: Gast steckt an, SmartFox gibt Strom frei, Auto laedt los —
-    // egal ob noch gar keine Session existiert ODER nur eine unbezahlte
-    // Vormerkung (REQUESTED) laeuft. locked wird erst bei startCharge
-    // (= bezahlt/freigegeben) aufgehoben.
-    // AUSNAHME: Im Wartezustand (WAITING_FOR_CAR) ist ein anlaufendes Auto
-    // genau das erwartete Start-Signal — hier NICHT sperren, sondern den
-    // WAITING-Block unten uebernehmen lassen.
-    if (unit.payRequired && unit.locked && !unit.sm.isCharging() &&
-        !unit.sm.isWaitingForCar() && unit.cfg.active) {
-      const laedt = snap.state === 'charging' || (snap.watt ?? 0) > 50;
-      if (laedt) {
-        await this._enforceLock(unit);
-        return;   // gesperrte Box: keine weitere Logik in diesem Zyklus
-      }
-    }
+    // Failsafe-Heartbeat (siehe _applyFailsafe)
+    await this._applyFailsafe(unit);
 
     // --- Kabel-Ereignisse ---
+    // WICHTIG: steht VOR der Default-Sperre. Frueher kam die Sperre zuerst und
+    // beendete den Zyklus mit return — lud ein fremdes Auto sofort beim
+    // Anstecken los, ging das Einsteck-Ereignis dadurch verloren (keine
+    // Benachrichtigung, kein "angesteckt seit").
     // Auto NEU eingesteckt: Einsteck-Zeitpunkt + Start-Zählerstand merken,
     // damit der Admin "angesteckt seit" und "geladen seit Einstecken" zeigen kann.
     if (snap.plugged && (!prev || !prev.plugged)) {
@@ -228,6 +270,31 @@ export class WallboxManager extends EventEmitter {
       });
       if (unit.sm.isCharging()) {
         await this._beginStop(unit, 'Kabel gezogen');
+      } else if (!unit.payRequired && !unit.session && unit.cfg.active) {
+        // Bezahlung AUS: wurde die Box vorher bewusst gestoppt (Admin/Alexa),
+        // ist sie fuer das naechste Anstecken wieder frei.
+        await this._releaseBox(unit);
+      }
+    }
+
+    // --- DEFAULT-SPERRE durchsetzen (Abrechnungsschutz) ----------------
+    // Box ist gesperrt (locked) und NICHT in einer laufenden Ladung
+    // (CHARGING), aber das Auto laedt trotzdem? -> erneut sperren. Das
+    // faengt ab: Gast steckt an, SmartFox gibt Strom frei, Auto laedt los —
+    // egal ob noch gar keine Session existiert ODER nur eine unbezahlte
+    // Vormerkung (REQUESTED) laeuft. locked wird erst bei startCharge
+    // (= bezahlt/freigegeben) aufgehoben.
+    // AUSNAHME: Im Wartezustand (WAITING_FOR_CAR) ist ein anlaufendes Auto
+    // genau das erwartete Start-Signal — hier NICHT sperren, sondern den
+    // WAITING-Block unten uebernehmen lassen. STOPPING regelt der
+    // STOPPING-Block unten selbst.
+    if (unit.payRequired && unit.locked && !unit.sm.isCharging() &&
+        !unit.sm.isWaitingForCar() && unit.sm.state !== STATES.STOPPING &&
+        unit.cfg.active) {
+      const laedt = snap.state === 'charging' || (snap.watt ?? 0) > 50;
+      if (laedt) {
+        await this._enforceLock(unit);
+        return;   // gesperrte Box: keine weitere Logik in diesem Zyklus
       }
     }
 
@@ -236,9 +303,16 @@ export class WallboxManager extends EventEmitter {
       const plugged = !!snap.plugged;
       const laedt = snap.state === 'charging' || (snap.watt ?? 0) > 50;
       // Auto steckt (oder laedt bereits) -> jetzt wirklich CHARGING + Freigabe.
+      // Schlaegt die Freigabe fehl (Modbus-Fehler), NICHT haengen bleiben:
+      // Fehler melden und unten trotzdem den Timeout pruefen. (Moegliche
+      // Ursache fuer Fehler 3.3 vom 20.10.: Box blieb ewig im Wartezustand.)
       if (plugged || laedt) {
-        await this._beginCharging(unit);
-        return;
+        try {
+          await this._beginCharging(unit);
+          return;
+        } catch (e) {
+          this.emit('errorOccurred', { wallboxId: unit.id, code: 'START_FAILED', details: e.message });
+        }
       }
       // Sonst: Timeout pruefen (Default 10 Min, ueberschreibbar via middle).
       const waitMs = (this.middle?.waitForCarMinutes ?? 10) * 60 * 1000;
@@ -249,7 +323,7 @@ export class WallboxManager extends EventEmitter {
         unit.session = null;
         unit.desired = { charging: false, currentMa: 0 };
         unit.sm.transition(STATES.IDLE, 'Timeout: kein Auto angesteckt');
-        if (unit.cfg.active) { unit.locked = true; await this._enforceLock(unit).catch(() => {}); }
+        await this._afterSession(unit, { release: true });
         // Abrechnungslayer gibt daraufhin die Reservierung frei (0 EUR).
         this.emit('waitTimeout', { wallboxId: unit.id, sessionId });
       }
@@ -283,23 +357,39 @@ export class WallboxManager extends EventEmitter {
 
     // --- Waehrend STOPPING: bestaetigen, dass Box wirklich gestoppt hat ---
     if (unit.sm.state === STATES.STOPPING) {
-      if (!snap.state || snap.state !== 'charging') {
-        // Box hat gestoppt -> Abschluss melden, IDLE
-        const finalKwh = unit.session
-          ? Math.max(0, snap.totalKwh - (unit.session.startKwh ?? 0)) : 0;
-        const sessionId = unit.session?.sessionId;
-        unit.sm.transition(STATES.IDLE, 'Stop bestaetigt');
-        this.emit('chargingStopped', { wallboxId: unit.id, sessionId, finalKWh: finalKwh });
-        unit.session = null;
-        unit.desired = { charging: false, currentMa: 0 };
-        // DEFAULT-SPERRE wieder aktivieren und sofort durchsetzen, damit
-        // nach Session-Ende nicht weitergeladen werden kann.
-        if (unit.cfg.active) {
-          unit.locked = true;
-          await this._enforceLock(unit);
-        }
+      const laedtNoch = snap.state === 'charging' || (snap.watt ?? 0) > 50;
+      const seit = unit.stoppingSince ? (this._now() - unit.stoppingSince) : 0;
+      if (!laedtNoch) {
+        await this._finishStop(unit, snap, 'Stop bestaetigt');
+      } else if (seit > (this.middle.stopForceSec != null ? this.middle.stopForceSec * 1000 : STOP_FORCE_MS)) {
+        // Stopp greift nicht (Auto verhandelt neu o.ae.): Session trotzdem
+        // abschliessen und Box hart sperren, statt endlos offen zu bleiben.
+        this.emit('errorOccurred', {
+          wallboxId: unit.id, code: 'STOP_FORCED',
+          details: `Box laedt ${Math.round(seit / 1000)} s nach Stopp noch (${snap.watt ?? 0} W) - Session zwangsweise beendet.`,
+        });
+        await this._finishStop(unit, snap, 'Stop erzwungen');
+      } else {
+        // Stopp wiederholen (frueher: einmal gesendet, dann nur gewartet)
+        await this._safeStop(unit);
       }
     }
+  }
+
+  // Session nach (bestaetigtem oder erzwungenem) Stopp abschliessen.
+  async _finishStop(unit, snap, reason) {
+    const finalKwh = unit.session
+      ? Math.max(0, (snap.totalKwh ?? 0) - (unit.session.startKwh ?? 0)) : 0;
+    const sessionId = unit.session?.sessionId;
+    unit.sm.transition(STATES.IDLE, reason);
+    unit.stoppingSince = null;
+    // Nie ohne Session-ID melden (server.js wuerde sonst "irgendeine" aktive
+    // Session der Box schliessen und die Abrechnung verhindern).
+    if (sessionId) this.emit('chargingStopped', { wallboxId: unit.id, sessionId, finalKWh: finalKwh });
+    unit.session = null;
+    unit.desired = { charging: false, currentMa: 0 };
+    // Bezahlung AN: DEFAULT-SPERRE sofort wieder durchsetzen.
+    await this._afterSession(unit);
   }
 
   // Soll/Ist: Box soll laden, tut sie das auch? (und umgekehrt)
@@ -382,11 +472,11 @@ export class WallboxManager extends EventEmitter {
   async _beginCharging(unit) {
     if (!unit.sm.canTransition(STATES.CHARGING)) return;
     this._guard(unit);
-    unit.locked = false;   // DEFAULT-SPERRE aufheben: ab jetzt darf geladen werden
     unit.session.startKwh = unit.snapshot?.totalKwh ?? unit.session.startKwh ?? 0;
     const maxMa = (unit.cfg.maxCurrentA ?? 16) * 1000;
     await unit.driver.writeEnable(true);
     await unit.driver.writeCurrent(maxMa);
+    unit.locked = false;   // DEFAULT-SPERRE aufheben (erst NACH erfolgreicher Freigabe)
     unit.desired = { charging: true, currentMa: maxMa };
     unit.lastSwitchTs = this._now();
     unit.waitingSince = null;
@@ -401,16 +491,23 @@ export class WallboxManager extends EventEmitter {
       throw new Error('Session passt nicht.');
     }
     const sid = unit.session?.sessionId;
+    // Noch kein Auto angesteckt (WAITING_FOR_CAR): Stopp = Abbruch, es wurde
+    // nichts geladen -> Reservierung freigeben (requestCancelled).
+    if (unit.sm.isWaitingForCar()) return this.cancelRequest(wallboxId, sid);
     await this._beginStop(unit, 'stopCharge');
     // FIX: Wenn _beginStop nichts tat (Box haengt in IDLE, aber es existiert
     // noch eine Session), die Session hier trotzdem sauber abschliessen.
     // Sonst bleibt sie als "active" haengen (Ursache der festhaengenden Sessions).
-    if (unit.session) {
+    // NUR im Zustand IDLE (25.10.2026): Steht die Box in STOPPING, schliesst der
+    // Poll die Session ab. Frueher liefen hier beide Wege parallel; einer meldete
+    // chargingStopped OHNE Session-ID, server.js schloss daraufhin die aktive
+    // Session, und settle() buchte beim zweiten Event NICHTS mehr ab.
+    if (unit.session && unit.sm.state === STATES.IDLE) {
       const finalKwh = unit.session.startKwh != null && unit.snapshot
         ? Math.max(0, (unit.snapshot.totalKwh ?? 0) - unit.session.startKwh)
         : (unit.session.energyKwh ?? 0);
       unit.session = null;
-      if (unit.cfg.active) { unit.locked = true; await this._enforceLock(unit).catch(() => {}); }
+      await this._afterSession(unit);
       this.emit('chargingStopped', { wallboxId: unit.id, sessionId: sid, finalKWh: finalKwh });
     }
     return { state: unit.sm.state };
@@ -453,10 +550,11 @@ export class WallboxManager extends EventEmitter {
   async setPayRequired(wallboxId, required) {
     const unit = this._unit(wallboxId);
     unit.payRequired = !!required;
+    await this._applyFailsafe(unit);   // AN: Fallback 0 A / AUS: Failsafe aus
     if (!required) {
       // Lese-Modus: Sperre aufheben, Box freigeben, NICHT mehr eingreifen.
       unit.locked = false;
-      try { await unit.driver.writeEnable(true); } catch { /* nur lesen, egal */ }
+      if (!unit.session) await this._releaseBox(unit);
     } else if (unit.cfg.active && !unit.session) {
       // wieder Abrechnungsschutz: sperren, falls keine Session laeuft
       unit.locked = true;
@@ -478,8 +576,9 @@ export class WallboxManager extends EventEmitter {
       unit.session = null;
       unit.waitingSince = null;
       unit.desired = { charging: false, currentMa: 0 };
-      // Box wieder sperren, damit nach Abbruch nicht weitergeladen werden kann.
-      if (unit.cfg.active) { unit.locked = true; await this._enforceLock(unit).catch(() => {}); }
+      // Bezahlung AN: Box wieder sperren, damit nach Abbruch nicht weitergeladen
+      // werden kann. Bezahlung AUS: Box wieder freigeben.
+      await this._afterSession(unit, { release: true });
       this.emit('requestCancelled', { wallboxId: unit.id, sessionId: sid });
     }
     return { state: unit.sm.state };
@@ -532,6 +631,7 @@ export class WallboxManager extends EventEmitter {
       unit.lastSwitchTs = this._now();
       unit.desired = { charging: false, currentMa: 0 };
       unit.sm.transition(STATES.STOPPING, reason);
+      unit.stoppingSince = this._now();
       // Sofort-Poll (Bug-3-Fix): nicht aufs Intervall warten, damit der
       // Stop-Abschluss (chargingStopped, Capture, Auto-Rücksetzung) prompt
       // passiert statt erst nach bis zu pollActiveSec Sekunden.

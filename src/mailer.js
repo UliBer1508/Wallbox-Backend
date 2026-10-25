@@ -61,6 +61,37 @@ export class Mailer {
   }
 
   /**
+   * Interne Benachrichtigung an den Betreiber (z.B. "Auto angesteckt").
+   * Wirft NIE — gibt {ok} zurück.
+   * @param {string[]} to       Empfänger-Adressen
+   * @param {string}   subject
+   * @param {string}   text     Klartext-Inhalt
+   */
+  async sendNotice(to, subject, text) {
+    const list = (to || []).filter(Boolean);
+    if (!this.enabled) { this._log('notice_skipped', 'Mailer nicht konfiguriert'); return { ok: false, skipped: true }; }
+    if (!list.length) { this._log('notice_skipped', 'NOTIFY_EMAIL nicht gesetzt'); return { ok: false, skipped: true }; }
+    const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#1c2722;">
+        <h2 style="color:#2f7d4f;margin-bottom:4px;">Steinbock Chalets · Wallbox</h2>
+        <pre style="font-family:Arial,sans-serif;font-size:15px;white-space:pre-wrap;">${esc(text)}</pre>
+      </div>`;
+    try {
+      await this.transport.sendMail({
+        from: `"${this.fromName}" <${this.user}>`,
+        to: list.join(', '),
+        subject, text, html,
+      });
+      this._log('notice_sent', `${subject} -> ${list.join(', ')}`);
+      return { ok: true };
+    } catch (e) {
+      this._logErr('notice_send_failed', e.message);
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /**
    * Verschickt eine Lade-Quittung. Wirft NIE — gibt {ok} zurück.
    * @param {object} inv  Rechnungsobjekt (aus db.createInvoice / getInvoiceBySession)
    * @returns {Promise<{ok:boolean, skipped?:boolean, error?:string}>}

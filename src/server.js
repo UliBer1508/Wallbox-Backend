@@ -14,8 +14,11 @@
 //   - Login gegen users-Tabelle (db.js), Token-basiert, gilt auf allen
 //     drei Ansichten (Admin + beide Gäste-Seiten) = voller Admin-Zugang
 //   - Bezahl-Schalter pro Box (pay_required_*), serverseitig erzwungen
-//   - Auto-Rücksetzung: free_charge gilt nur für EINE Ladung; nach
-//     Ladeende wird pay_required wieder auf true gesetzt
+//   - Bezahl-Schalter wird NUR von Hand umgelegt (keine Auto-Rücksetzung mehr,
+//     25.10.2026: sie setzte nur die DB, nicht den Manager -> Anzeige "an",
+//     Box aber offen)
+//   - E-Mail an NOTIFY_EMAIL (.env), wenn bei Bezahlung AN ein Auto angesteckt
+//     wird oder die Sperre/der Stopp nicht greift
 //   - Stripe-Gäste-Flow (request/confirm/stop) + Live-Status
 //   - bindet upload.js ein (Datei-Upload, eigenes Login dort bleibt kompatibel)
 //
@@ -131,7 +134,7 @@ export async function buildServer(opts = {}) {
   });
   mailer.verify().catch(() => {});
 
-  // --- Auto-Rücksetzung des Bezahl-Schalters nach Ladeende ---
+  // --- Nach Ladeende: DB-Session abschliessen + Quittung ---
   facade.on('chargingStopped', ({ wallboxId, sessionId }) => {
     // DB-Session sauber abschliessen (verhindert haengende 'active'-Sessions)
     try {
@@ -141,12 +144,10 @@ export async function buildServer(opts = {}) {
         db.log('session_closed', { wallboxId, sessionId: sess.id, details: 'chargingStopped' });
       }
     } catch (e) { db.log('session_close_error', { wallboxId, details: e.message }); }
-    // Bezahl-Schalter nach Ladeende zuruecksetzen
-    const key = `pay_required_${wallboxId}`;
-    if (db.getSetting(key) === false) {
-      db.setSetting(key, true);
-      db.log('pay_required_reset', { wallboxId, details: 'Auto-Rücksetzung nach Ladeende' });
-    }
+    // KEINE Auto-Rücksetzung des Bezahl-Schalters mehr (25.10.2026).
+    // Grund: sie setzte nur die DB auf "Bezahlung an", der Manager blieb im
+    // Lese-Modus -> Anzeige "an", Box aber offen. Ausserdem gilt: Bezahlung AUS
+    // = Uli selbst, bleibt aus, bis er es im Admin umlegt.
     // Quittungs-Mail verschicken. settle() (in stripe.js) erzeugt die Rechnung
     // ebenfalls über das chargingStopped-Event — daher kurz warten, dann die
     // fertige Rechnung holen und mailen. Fehler blockieren nichts.
@@ -183,6 +184,97 @@ export async function buildServer(opts = {}) {
     } catch (e) { db.log('request_cancelled_error', { wallboxId, sessionId, details: e.message }); }
   });
   facade.on('waitingForCar', ({ wallboxId, sessionId }) => db.log('waiting_for_car', { wallboxId, sessionId }));
+
+  // === BENACHRICHTIGUNG an den Betreiber ==================================
+  // Empfänger aus .env: NOTIFY_EMAIL=adresse1,adresse2 (nicht im Code, da Repo).
+  //  - Auto angesteckt bei Bezahlung AN  -> Mail (max. 1 pro Box in 10 Min)
+  //  - Sperre/Stopp greift nicht (LOCK_FAILED, STOP_FORCED) -> Alarm-Mail
+  //    (max. 1 pro Box und Fehlerart in 30 Min)
+  // Bei Bezahlung AUS (= Uli selbst) wird NICHTS verschickt.
+  // In den ersten 60 s nach dem Start keine Einsteck-Mails: der erste Poll
+  // meldet ein bereits steckendes Auto sonst bei jedem Neustart als "neu".
+  const notifyTo = (process.env.NOTIFY_EMAIL || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const NOTIFY_STARTUP_QUIET_MS = (cfg.middle.notifyStartupQuietSec ?? 60) * 1000;
+  const NOTIFY_PLUG_DEBOUNCE_MS = (cfg.middle.notifyPlugDebounceMin ?? 10) * 60 * 1000;
+  const NOTIFY_ALARM_DEBOUNCE_MS = 30 * 60 * 1000;
+  const NOTIFY_PLUG_DELAY_MS = (cfg.middle.notifyPlugDelaySec ?? 15) * 1000;   // kurz warten: lädt es / greift die Sperre?
+  const serverStartTs = Date.now();
+  const lastNotice = new Map();             // "plug:p30c" -> ts
+
+  function debounced(key, ms) {
+    const last = lastNotice.get(key) || 0;
+    if (Date.now() - last < ms) return true;
+    lastNotice.set(key, Date.now());
+    return false;
+  }
+  function zeitText(ts = Date.now()) {
+    return new Date(ts).toLocaleString('de-AT', { timeZone: 'Europe/Vienna' });
+  }
+  const payOn = (id) => db.getSetting(`pay_required_${id}`) !== false;
+  const boxName = (id) => cfg.wallboxes.find((w) => w.id === id)?.name || id;
+
+  async function sendPlugNotice(wallboxId, plugTs) {
+    try {
+      if (!payOn(wallboxId)) return;
+      const st = await facade.getState(wallboxId).catch(() => null);
+      const hw = st?.hardware || {};
+      if (!hw.plugged) return;   // inzwischen wieder abgesteckt -> keine Mail
+      const sess = db.getActiveSession(wallboxId);
+      const fsm = st?.fsmState || 'unbekannt';
+      const watt = Math.round(hw.watt ?? 0);
+      let lage;
+      if (sess && !sess.free_charge) {
+        lage = `Bezahlte Session von ${sess.guest_name || 'Gast'}`
+          + (sess.guest_email ? ` (${sess.guest_email})` : '')
+          + `, Modus: ${sess.mode === 'limit' ? `bis ${sess.limit_amount} EUR` : 'voll laden'}.`;
+      } else if (sess && sess.free_charge) {
+        lage = `Gratis-Session (${sess.guest_name || 'Admin'}) - von dir gestartet.`;
+      } else if (fsm === 'REQUESTED') {
+        lage = 'Gast ist gerade beim Bezahlen (noch nicht bezahlt). Die Box bleibt gesperrt.';
+      } else {
+        lage = 'KEINE bezahlte Session. Die Box ist gesperrt - es wird nicht geladen.';
+      }
+      const text =
+`Auto angesteckt an ${boxName(wallboxId)}
+
+Zeit:      ${zeitText(plugTs)}
+Lage:      ${lage}
+Jetzt:     ${watt > 50 ? `lädt mit ${watt} W` : 'lädt nicht'} (Zustand ${fsm})
+
+Admin: ${process.env.PUBLIC_BASE_URL || 'http://localhost:8080'}`;
+      const r = await mailer.sendNotice(notifyTo, `🔌 Auto angesteckt: ${boxName(wallboxId)}`, text);
+      db.log('notify_plug', { wallboxId, details: { ok: r.ok, skipped: !!r.skipped, lage } });
+    } catch (e) { db.log('notify_plug_error', { wallboxId, details: e.message }); }
+  }
+
+  facade.on('cablePlugged', ({ wallboxId, ts }) => {
+    if (Date.now() - serverStartTs < NOTIFY_STARTUP_QUIET_MS) return;
+    if (!payOn(wallboxId)) return;
+    if (debounced(`plug:${wallboxId}`, NOTIFY_PLUG_DEBOUNCE_MS)) return;
+    const t = setTimeout(() => sendPlugNotice(wallboxId, ts), NOTIFY_PLUG_DELAY_MS);
+    if (t.unref) t.unref();
+  });
+
+  facade.on('errorOccurred', ({ wallboxId, code, details }) => {
+    if (code !== 'LOCK_FAILED' && code !== 'STOP_FORCED') return;
+    if (wallboxId && !payOn(wallboxId)) return;
+    if (debounced(`alarm:${code}:${wallboxId}`, NOTIFY_ALARM_DEBOUNCE_MS)) return;
+    const was = code === 'LOCK_FAILED'
+      ? 'Die Sperre konnte NICHT gesetzt werden (Modbus-Fehler). Es könnte ohne Bezahlung geladen werden.'
+      : 'Ein Stopp hat nicht gegriffen, die Session wurde zwangsweise beendet und die Box gesperrt.';
+    const text =
+`ACHTUNG ${boxName(wallboxId)}
+
+Zeit:    ${zeitText()}
+Problem: ${was}
+Details: ${details || '-'}
+
+Bitte im Admin prüfen: ${process.env.PUBLIC_BASE_URL || 'http://localhost:8080'}`;
+    mailer.sendNotice(notifyTo, `⚠️ Wallbox-Alarm: ${boxName(wallboxId)}`, text)
+      .then((r) => db.log('notify_alarm', { wallboxId, details: { code, ok: r.ok } }))
+      .catch(() => {});
+  });
+  // ========================================================================
 
   // --- Live-Energie: während des Ladens energy_kwh + amount laufend setzen ---
   // (Ohne diesen Handler bliebe die Live-Anzeige bei 0 kWh / 0 €, bis die
@@ -326,8 +418,8 @@ export async function buildServer(opts = {}) {
   //   - active  + Auto ABGESTECKT  -> beenden (Auto weg, Session blieb)
   //   - Auto ANGESTECKT (egal wie lange) -> NIEMALS anfassen (Tesla-Überschuss!)
   //   - Strom fliesst (watt>50)    -> NIEMALS anfassen (lädt gerade)
-  const CLEANUP_INTERVAL_MS = 3 * 60 * 1000;   // alle 3 Min prüfen (fest)
-  const CLEANUP_UNPLUG_GRACE_MS = 2 * 60 * 1000; // 2 Min Karenz bei abgestecktem Auto (fest)
+  const CLEANUP_INTERVAL_MS = (cfg.middle.cleanupIntervalSec ?? 180) * 1000;   // alle 3 Min prüfen
+  const CLEANUP_UNPLUG_GRACE_MS = (cfg.middle.cleanupUnplugGraceSec ?? 120) * 1000; // 2 Min Karenz bei abgestecktem Auto
 
   async function runSessionCleanup() {
     try {
@@ -339,12 +431,31 @@ export async function buildServer(opts = {}) {
         const startTs = s.started_at ? new Date(s.started_at).getTime() : 0;
         const alterMs = now - startTs;
         // Live-Zustand der Box holen (Auto angesteckt? Strom?)
-        let plugged = false, watt = 0;
+        let plugged = false, watt = 0, st = null;
         try {
-          const st = await facade.getState(s.wallbox_id);
+          st = await facade.getState(s.wallbox_id);
           plugged = !!st?.hardware?.plugged;
           watt = st?.hardware?.watt ?? 0;
         } catch { /* Box nicht erreichbar -> vorsichtshalber NICHT anfassen */ continue; }
+
+        // SCHUTZ (25.10.2026, Fehler 3.2): Gehört die Session gerade dem
+        // Manager (wartet auf Auto, lädt, stoppt), NIEMALS hier beenden. Der
+        // Manager hat eigene Timeouts. Früher wurde eine bezahlte Session nach
+        // 2 Min ohne Auto geschlossen; steckte der Gast später an, lud er,
+        // aber settle() sah "completed" und buchte nichts ab.
+        const owned = st?.session?.sessionId === s.id;
+        if (owned && ['WAITING_FOR_CAR', 'CHARGING', 'STOPPING'].includes(st?.fsmState)) continue;
+
+        // Unbezahlte Vormerkung, die der Manager noch hält (REQUESTED): über den
+        // Manager abbrechen (gibt Reservierung frei, Box bleibt gesperrt) — sonst
+        // bliebe die Box in REQUESTED hängen und kein Gast könnte mehr starten.
+        if (s.status === 'pending' && owned && st?.fsmState === 'REQUESTED' &&
+            alterMs > pendingMin * 60 * 1000) {
+          await facade.cancelRequest(s.wallbox_id, s.id).catch(() => {});
+          db.log('session_auto_cleanup', { wallboxId: s.wallbox_id, sessionId: s.id,
+            details: `pending > ${pendingMin} Min, Vormerkung im Manager abgebrochen` });
+          continue;
+        }
 
         // SCHUTZ: Auto angesteckt oder Strom fliesst -> niemals beenden.
         if (plugged || watt > 50) continue;
@@ -566,7 +677,10 @@ function registerRoutes(app, { db, facade, billing, manager, autoGratis }) {
         started_at: new Date().toISOString(),
       });
       await facade.startCharge(id, sessionId);
-      await facade.setCurrent(id, ampere);
+      // Fehler 3.1 (20.10.): nach startCharge steht die Box in WAITING_FOR_CAR,
+      // setCurrent ist erst in CHARGING erlaubt -> früher HTTP 400, obwohl der
+      // Start klappte. Jetzt ignoriert; geladen wird mit maxCurrentA der Box.
+      await facade.setCurrent(id, ampere).catch(() => {});
       res.json({ ok: true, sessionId });
     } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
   });

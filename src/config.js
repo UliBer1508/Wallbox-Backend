@@ -26,7 +26,9 @@ export const wallboxes = [
     minCurrentA: 6,
     maxCurrentA: 16,
     failsafeTimeoutSec: 30,    // Box stoppt selbst bei Daemon-Stille [PRUEFEN@PC]
-    failsafeFallbackA: 6,
+                               // (nur bei Bezahlung AN aktiv; 0 = Failsafe nie nutzen)
+    failsafeFallbackA: 0,      // 0 A: faellt das Backend aus, laedt NIEMAND gratis
+                               // (frueher 6 A = Gratis-Laden bei Backend-Ausfall)
   },
   {
     id: 'p30x',
@@ -41,7 +43,9 @@ export const wallboxes = [
     minCurrentA: 6,
     maxCurrentA: 16,
     failsafeTimeoutSec: 30,    // Box stoppt selbst bei Daemon-Stille [PRUEFEN@PC]
-    failsafeFallbackA: 6,
+                               // (nur bei Bezahlung AN aktiv; 0 = Failsafe nie nutzen)
+    failsafeFallbackA: 0,      // 0 A: faellt das Backend aus, laedt NIEMAND gratis
+                               // (frueher 6 A = Gratis-Laden bei Backend-Ausfall)
   },
 ];
 
@@ -55,6 +59,11 @@ export const middle = {
   reconnectTries: 5,      // Reconnect-Versuche pro Zyklus
   backoffBaseSec: 2,      // Backoff-Basis zwischen Versuchen
   guardDurationSec: 30,   // Schuetz-Schonung: Warnung bei schnellerem Schalten
+  stopForceSec: 30,       // Stopp greift nicht -> nach X s Session erzwungen beenden + sperren
+  // Benachrichtigung (Empfaenger: NOTIFY_EMAIL in .env)
+  notifyStartupQuietSec: 60,  // nach Backend-Start X s keine Einsteck-Mails
+  notifyPlugDelaySec: 15,     // Einsteck-Mail X s verzoegert (zeigt, ob Sperre greift)
+  notifyPlugDebounceMin: 10,  // max. 1 Einsteck-Mail pro Box in X Min
 };
 
 // --- Gruppe C: Bezahlsystem ------------------------------------------
